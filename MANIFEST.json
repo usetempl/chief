@@ -1,8 +1,8 @@
 {
-  "version": "0.1.0",
+  "version": "0.1.1",
   "files": {
-    "README.md": "e2d8c28e641b97ad1c29992e695bb33501949d36c051da31d1087369f3024aeb",
-    "VERSION": "e9dd8507f4bf0c6f42458e41aea833ad0bd3f6127272335eee9bf4d58541ed67",
+    "README.md": "834dc5015e7af590cba480ec1033e6ee02967bcc5be82a250088a854896fc960",
+    "VERSION": "80447316529fc62014fbaa047fb67c51ac30e32830cda370405349d8d66d196c",
     "docs/telegram.md": "f13a59ee5f5ccb5e1bac86c7b77ee458d373bdb2113cc75e4d9ab48e51f4d3ef",
     "onboard.py": "f650e773a17e51f0cd68115a1b87cff53edf2214e4d7fd5b2000e667a129f790",
     "requirements.txt": "9ec828179a682425537349fb41440b48a47b1ef006b7b3e1d1542566d3ec6943",

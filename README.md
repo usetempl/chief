@@ -1,19 +1,36 @@
 # Chief
 
-Your AI chief of staff. Made by [Templ](https://usetempl.com).
+Your AI chief of staff, made by [Templ](https://usetempl.com).
 
-One place to manage your projects. Chief sends work to the right existing AI lead and keeps a private task board.
+Coordinate your existing AI leads across projects and track their work on one private board.
 
-## Get started
+## 🚀 Get started
 
 Open your signed-in **Codex** and paste:
 
 > Read https://raw.githubusercontent.com/templ-fun/chief/main/docs/start.md and set up Chief for me.
 
-Codex handles the setup, offers a nickname, and helps you choose your first task. The core uses Codex and Markdown. Setup checks whether cloning needs Git. Telegram is optional.
+Codex helps you set up Chief, pick a nickname and build your first board. Start with a signed-in Codex and workspace access. Telegram is optional.
 
-**Backlog → Todo → Doing → Review → Done**
+## ⚙️ How it works
 
-[How it works](docs/architecture.md) · [Add Telegram](docs/telegram.md) · [Connect another device](docs/device.md)
+The core is Markdown instructions and records. The model makes decisions; Chief adds no planning engine, vector database or model server.
 
-MIT licensed. Your private workspace stays outside this public source repo.
+| Layer | What runs |
+| --- | --- |
+| **Coordinator** | One Codex thread reads instructions, `projects.md` and relevant cards, then answers or chooses an existing lead. |
+| **Project leads** | Each project keeps its thread, repository and tools. Chief sends a focused brief; the lead returns a result or blocker. |
+| **Board** | `tasks/<column>/*.md`: **Backlog** = ideas; **Todo** = committed work; **Doing** = execution; **Review** = human decision; **Done** = verified outcome. Moves retain timestamps. |
+| **Memory** | Codex handles context and compaction. Markdown keeps durable facts; project owners keep detailed evidence. Private Git backups are optional. No wholesale history loading. |
+| **Telegram · optional** | Python 3.12+, its standard library and pinned `websockets` connect to Codex's app-server. Enrollment controls access; SQLite holds requests, the outbox and delivery receipts. |
+| **Reports & replies** | The adapter's `/report` reads saved cards without model calls. Replies split at Telegram's message limit and record each part's delivery. |
+
+![Chief by Templ: request flow, project leads, board and memory](docs/architecture.png)
+
+[Technical details](docs/architecture.md) · [Add Telegram](docs/telegram.md) · [Connect another device](docs/device.md)
+
+## 🔖 Versions
+
+This repo is Chief's source of truth. Reusable improvements ship here, with `vX.Y.Z` Git tags, a matching `VERSION` and a [changelog](CHANGELOG.md). Updating source does not overwrite an existing installation.
+
+MIT licensed. Your private board, accounts and history stay outside this repo.
