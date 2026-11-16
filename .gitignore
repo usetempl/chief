@@ -1,0 +1,12 @@
+.private/
+chief-private/
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+*.pem
+*.key
+*.sqlite*
+*.log
+.DS_Store
