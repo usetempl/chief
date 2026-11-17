@@ -2,7 +2,7 @@
 
 Paste into Codex on the new machine:
 
-> Read https://raw.githubusercontent.com/usetempl/chief/main/docs/device.md. Help me connect this device to my existing Chief through a verified connection and approved enrollment. Keep one coordinator and verify a real request and answer.
+> Read https://usetempl.com/chief. Help me connect this device to my existing Chief through a verified connection and approved enrollment. Keep one coordinator and verify a real request and answer.
 
 This guide explains the interface. Reading it does not approve a device or grant access to Alfred or any other Chief. Signing into your own Codex account does not grant access to someone else's installation.
 
@@ -15,6 +15,16 @@ Instructions for the agent:
 5. Verify a real request and answer from the new device. For a worker, also run one harmless capability check in its approved folder. Mark it usable only after both the connection and applicable execution checks pass.
 
 Use the model to choose a suitable device for each task. Keep project ownership with the existing lead. Do not install a general agent framework, a second Chief, a scheduler or a new service just to read this guide.
+
+## Choose where work runs
+
+After the connection check, tell Chief which work belongs on the device. For example:
+
+> Use my desktop for renders. Run the website project on my laptop.
+
+Record the preference in the private project registry. Include the device label, verified connection, relevant tools and approved workspace paths. Check access and availability before using it. A device label does not grant access.
+
+Keep the project's existing lead. Use that lead's supported remote tools or an approved native handoff. Thread IDs do not transfer between machines. If the lead cannot use the selected device, report the missing capability. Do not silently create a replacement lead or copy account sessions.
 
 For macOS/Windows, use the supported app connection when available. A Linux host needs a currently supported route, such as an already configured SSH workspace. SSH alone is not a complete Codex setup: the [official connection guide](https://learn.chatgpt.com/docs/remote-connections) also requires authenticated Codex on the remote host. Check those prerequisites only when this connection is needed. Do not assume a CLI, package manager or native Linux app is present.
 

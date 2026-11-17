@@ -717,11 +717,13 @@ class Inbox:
 
 
 def setup_guides():
-    return ("Chief setup guides\n\n"
-            "1. Connect Dot/mobile to your existing Chief:\nhttps://github.com/usetempl/chief/blob/main/docs/dot.md\n\n"
-            "2. Connect another computer to the same Chief:\nhttps://github.com/usetempl/chief/blob/main/docs/device.md\n\n"
-            "3. Start a separate Chief for another person:\nhttps://github.com/usetempl/chief/blob/main/docs/start.md\n\n"
-            "Give the matching link to Codex. Public guides grant no access; another person uses their own account and private instance.")
+    return ("Chief setup\n\nhttps://usetempl.com/chief\n\n"
+            "1. Install Chief on your main computer.\n"
+            "2. Connect Dot for phone access.\n"
+            "3. Add devices and assign work.\n"
+            "4. Use /report for the saved board, without AI tokens.\n\n"
+            "Give this page to your AI and choose a path.\n"
+            "Public instructions grant no access. Another person uses their own account and private instance.")
 
 
 def configure_chat_menu(api, chat_id, label):

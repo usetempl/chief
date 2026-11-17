@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3 — pending website publication
+
+- Use one entry page at `https://usetempl.com/chief` for new instances, another device and Dot/mobile.
+- Include the full setup, device, core and optional Telegram instructions in one static guide generated from the existing source files.
+- Point the README prompts and optional Telegram `/setup` command at that page.
+- Add four getting-started steps: host setup, Dot/mobile, device work preferences, and Telegram `/report` without model calls.
+
+Activate these entry links after the website owner verifies the complete page in production. Existing installations keep their private state and permissions.
+
 ## 0.1.2 — 2026-11-16
 
 - Follow the GitHub organization rename to `usetempl/chief`.
