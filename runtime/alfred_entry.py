@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read one exact local owner request. No submission, wake, network or model calls."""
+"""Read one exact local request or an owner's own outcome receipt. No submission, wake, network or model calls."""
 import argparse
 from contextlib import closing
 import hashlib
@@ -101,15 +101,79 @@ def result(request_id, root=ROOT):
         return output
 
 
+DELIVERY = {"pending": "queued", "sending": "sending", "uncertain": "uncertain", "failed": "failed"}
+
+
+def outcome_receipt(request_id, owner_id, root=ROOT):
+    """Delivery metadata for an owner's own published outcome. Never a body.
+
+    The outcome must carry this owner as actor, its stable event ID, a still-enrolled
+    original recipient and, when routed, the matching parent route and recipient.
+    """
+    from alfred_projects import registered_owners
+    if (not isinstance(request_id, str) or re.fullmatch(r"local:[0-9a-f]{64}", request_id) is None
+            or owner_id not in registered_owners()):
+        raise BridgeError("An exact local request ID and current owner are required")
+    root = private_root(root).absolute()
+    path = root / "inbox.sqlite"
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise BridgeError("An existing owner-only database is required")
+    denied = {"request_id": request_id, "status": "not_found_or_not_allowed"}
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=1)) as db:
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA query_only=ON")
+        db.execute("BEGIN")
+        row = db.execute("""
+            SELECT r.status, r.chat_id, r.user_id, r.label, c.event_id, c.parent_request_id FROM requests r
+            JOIN request_context c ON c.request_id=r.id
+            JOIN users u ON u.user_id=r.user_id AND u.chat_id=r.chat_id AND u.label=r.label
+            WHERE r.id=? AND c.source='project_outcome' AND c.actor=? AND u.added<=r.received
+        """, (request_id, owner_id)).fetchone()
+        if (row is None or not isinstance(row["event_id"], str)
+                or request_id != "local:" + hashlib.sha256(row["event_id"].encode()).hexdigest()):
+            return denied
+        routed = re.fullmatch(r"project-outcome:([0-9a-f-]{36})", row["event_id"])
+        if row["parent_request_id"]:
+            parent = db.execute("SELECT 1 FROM requests WHERE id=? AND user_id=? AND chat_id=? AND label=?",
+                                (row["parent_request_id"], row["user_id"], row["chat_id"], row["label"])).fetchone()
+            route = routed is None or db.execute(
+                "SELECT 1 FROM appserver_project_routes WHERE route_id=? AND owner_id=? AND request_id=?",
+                (routed[1], owner_id, row["parent_request_id"])).fetchone()
+            if parent is None or not route:
+                return denied
+        elif routed:
+            return denied
+        output = {"request_id": request_id, "status": "found",
+                  "request_state": row["status"] if row["status"] in {"pending", "processing", "done", "denied"} else "unknown",
+                  "dispatch_state": "not_recorded", "delivery_state": "not_recorded"}
+        dispatch = db.execute("SELECT state FROM appserver_dispatch WHERE request_id=?", (request_id,)).fetchone()
+        if dispatch:
+            output["dispatch_state"] = dispatch["state"] if dispatch["state"] in {
+                "sending", "accepted", "reconciled", "rejected", "uncertain"} else "unknown"
+        answer = db.execute("SELECT status,telegram_id FROM outbox WHERE id=? AND chat_id=?",
+                            ("result:" + request_id, row["chat_id"])).fetchone()
+        if answer:
+            output["delivery_state"] = DELIVERY.get(answer["status"], "unknown")
+            if answer["status"] == "sent" and type(answer["telegram_id"]) is int and answer["telegram_id"] > 0:
+                output["delivery_state"] = "sent"
+        return output
+
+
 def main(argv=None):
     parser = SafeParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True, parser_class=SafeParser)
     read = commands.add_parser("result", help="Read one local owner request and its saved answer")
     read.add_argument("--request-id", required=True, help="Exact local: ID returned by alfred_local.py submit")
     read.add_argument("--root", type=Path, default=ROOT, help="Existing owner-only bridge storage")
+    receipt = commands.add_parser("outcome", help="Read delivery metadata for this owner's own published outcome")
+    receipt.add_argument("--request-id", required=True, help="Exact local: ID returned by alfred_local.py submit or handoff")
+    receipt.add_argument("--owner-id", required=True, help="The publishing owner's registered identity")
+    receipt.add_argument("--root", type=Path, default=ROOT, help="Existing owner-only bridge storage")
     args = parser.parse_args(argv)
     try:
-        output = result(args.request_id, args.root)
+        output = (outcome_receipt(args.request_id, args.owner_id, args.root) if args.command == "outcome"
+                  else result(args.request_id, args.root))
     except (BridgeError, OSError, sqlite3.Error, ValueError):
         # Never echo paths, database diagnostics, credentials or untrusted values.
         print(json.dumps({"error": "Result unavailable; verify exact local ID, private storage and schema"}))

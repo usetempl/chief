@@ -208,6 +208,24 @@ assert 'enum' not in schema and re.fullmatch(schema['pattern'], 'codex:' + threa
 card = workspace / 'tasks/blocked/sign-in.md'
 card.write_text('# Sign in\nBlocked by: Fresh team sign-in\nResolver: Pilot Owner\nNext: Sign in\n')
 assert 'BLOCKED (1)' in report(workspace) and 'Blocked by Fresh team sign-in; resolver: Pilot Owner' in report(workspace)
+from alfred_local import handoff
+from alfred_entry import outcome_receipt
+owner = 'codex:00000000-0000-4000-8000-000000000003'
+with open(workspace / 'projects.md', 'a') as index:
+ index.write('| P1 | Pilot | private | `/pilot` | `' + owner + '` |\n')
+inbox.ingest(update(3,'Release the shared browser'))
+asyncio.run(Adapter(inbox, {'thread_id':thread,'socket_path':str(ROOT/'fake.sock')}).router.close())
+with inbox.db:
+ inbox.db.execute("INSERT INTO appserver_project_routes (route_id,request_id,owner_id,project,brief,input_text,input_hash,client_id,state,turn_id,created,updated) VALUES ('00000000-0000-4000-8000-0000000000aa','tg:77:3',?,'Pilot','b','i','h','c','accepted','owner-turn',1,1)", (owner,))
+early = handoff(inbox, '00000000-0000-4000-8000-0000000000aa', owner, 'Browser released')
+assert handoff(inbox, '00000000-0000-4000-8000-0000000000aa', owner, 'Browser released') == early
+assert tuple(inbox.db.execute('SELECT state,delivered FROM appserver_project_routes').fetchone()) == ('completed', 1)
+assert outcome_receipt(early, owner, ROOT)['status'] == 'found'
+try:
+ outcome_receipt(early, 'codex:00000000-0000-4000-8000-000000000009', ROOT)
+ raise AssertionError('unregistered reader accepted')
+except BridgeError:
+ pass
 print('specialist and blocked passed')
 '''
         result = subprocess.run([sys.executable, '-c', probe], cwd=self.workspace, capture_output=True, text=True)

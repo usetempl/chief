@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2 — 2026-11-17
+
+- Add `alfred_local.py handoff` so an owner can publish a completed shared-resource answer (release, confirm or refuse) immediately as its route's only result, while it continues unrelated work. The command binds to the route, owner, parent and still-enrolled recipient. It is idempotent, and the later terminal turn is not relayed again. Route briefs include the exact command.
+- Add `alfred_entry.py outcome`, which returns delivery metadata, never bodies, for an owner's own published outcome.
+
+Existing coordinators need no new tool. Both commands are local CLI paths. Routes created before the collector loads 0.2.2 do not include the command in their brief.
+
 ## 0.2.1 — 2026-11-17
 
 - Keep reproducible failures of the requested main flow within the narrow delivery holds.

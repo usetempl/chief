@@ -181,6 +181,25 @@ COS_WORKSPACE="$PWD" .venv/bin/python runtime/alfred_local.py submit --root "$PW
 
 The actor must be this installation's configured coordinator, and the parent must be an enrolled user's request that the coordinator accepted. Derived, scheduled, maintenance or unaccepted parents are rejected. The result reaches the coordinator as specialist evidence for the original recipient. It is not a user instruction, project owner or release approval. The stable event ID deduplicates; a rejected or uncertain submission is never replayed automatically.
 
+### Shared-resource handoffs and owner receipts
+
+A routed brief can ask an owner only to release, confirm or refuse a shared resource, such as native UI, a browser or a host. The route input gives the owner the exact command. When the answer is true, the owner writes it to an owner-only file and publishes it immediately:
+
+```
+COS_WORKSPACE="$PWD" .venv/bin/python runtime/alfred_local.py handoff --route-id ROUTE-ID \
+  --owner-id codex:OWNER-THREAD-ID --body-file ANSWER.txt
+```
+
+The answer reaches the coordinator at once as owner evidence for the route's original recipient. The owner can keep working on unrelated tasks privately. In the same transaction, the route is marked completed and delivered, so the owner's later terminal turn is not relayed again. The command requires a currently registered owner, its own route that is still awaiting a result, and a still-enrolled original sender. Repeating the same answer returns the same request. A different answer, a route that already returned its terminal result, or another owner is rejected. Commentary and progress are never treated as a handoff, and the command grants no authority.
+
+An owner can read only delivery metadata for its own published outcome, never another record or any body text:
+
+```
+COS_WORKSPACE="$PWD" .venv/bin/python runtime/alfred_entry.py outcome --request-id local:ID --owner-id codex:OWNER-THREAD-ID
+```
+
+It checks the publishing owner, the stable event ID, the still-enrolled recipient and, for routed results, the matching parent and route. It returns the request, dispatch and delivery states only.
+
 ### Existing-thread advance notice
 
 The CLI uses the same maintenance-notice guard, outbox and durable sent receipt as the dynamic tool.

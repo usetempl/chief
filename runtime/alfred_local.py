@@ -79,7 +79,7 @@ def chief_specialist(inbox, actor, parent_request_id):
     return accepted is not None and current_sender(inbox.db, parent_request_id) is not None
 
 
-def submit(inbox, event_id, body, source="native_user", actor=None, parent_request_id=None):
+def submit(inbox, event_id, body, source="native_user", actor=None, parent_request_id=None, *, complete_route=None):
     private_root(inbox.root)
     ensure_context(inbox)
     if (not isinstance(event_id, str) or not 1 <= len(event_id) <= 200 or not isinstance(body, str)
@@ -115,6 +115,14 @@ def submit(inbox, event_id, body, source="native_user", actor=None, parent_reque
     request_id = "local:" + digest
     identifier = -(int(digest[:15], 16) + 1)
     with inbox.db:
+        if complete_route:
+            # The early result becomes the route's only result. The adapter's
+            # terminal path completes only accepted routes, so it cannot repeat it.
+            changed = inbox.db.execute("""UPDATE appserver_project_routes SET state='completed',outcome=?,delivered=1,updated=?
+                WHERE route_id=? AND owner_id=? AND request_id=? AND state='accepted'""",
+                (complete_route["outcome"], time.time(), complete_route["route_id"], actor, parent_request_id)).rowcount
+            if not changed:
+                raise BridgeError("Route is not awaiting this owner's result")
         inbox.db.execute("INSERT INTO requests(id,update_id,user_id,chat_id,message_id,label,body,received) VALUES (?,?,?,?,?,?,?,?)",
                          (request_id, identifier, recipient["user_id"], recipient["chat_id"], identifier, recipient["label"], clean, time.time()))
         inbox.db.execute("INSERT INTO request_context VALUES (?,?,?,?,?)", (request_id, source, actor, event_id, parent_request_id))
@@ -127,6 +135,33 @@ def submit_project_outcome(inbox, event):
     suffix = "\nPrivate route ID: " + event["route_id"]
     return submit(inbox, event["event_id"], body + suffix,
                   "project_outcome", event["owner_id"], event["request_id"])
+
+
+def handoff(inbox, route_id, owner_id, body):
+    """Publish an owner's explicit completed resource handoff as its route's result now.
+
+    For a brief that only asks to release or confirm a shared resource. The owner
+    may continue unrelated work privately; its later terminal turn is not relayed.
+    """
+    from alfred_projects import registered_owners
+    private_root(inbox.root)
+    ensure_context(inbox)
+    owner = registered_owners().get(owner_id)
+    if owner is None or not isinstance(route_id, str) or not route_id:
+        raise BridgeError("A current owner and its route ID are required")
+    if not inbox.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='appserver_project_routes'").fetchone():
+        raise BridgeError("No routed brief is recorded")
+    route = inbox.db.execute("SELECT * FROM appserver_project_routes WHERE route_id=? AND owner_id=?",
+                             (route_id, owner_id)).fetchone()
+    if route is None or current_sender(inbox.db, route["request_id"]) is None:
+        raise BridgeError("Route, owner or original sender is no longer authorized")
+    if not isinstance(body, str) or not body.strip():
+        raise BridgeError("A completed handoff answer is required")
+    outcome, _ = redact(body, conservative=False)
+    text = ("Existing project owner resource handoff for " + route["project"] + " (completed).\n" + body
+            + "\nPrivate route ID: " + route_id)
+    return submit(inbox, "project-outcome:" + route_id, text, "project_outcome", owner_id, route["request_id"],
+                  complete_route={"route_id": route_id, "outcome": outcome})
 
 
 def wake(root):
@@ -187,13 +222,14 @@ def release_owner(inbox, owner_id, event_id):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("submit", "release-owner", "wake"))
+    parser.add_argument("command", choices=("submit", "handoff", "release-owner", "wake"))
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--event-id")
     parser.add_argument("--body-file", type=Path)
     parser.add_argument("--source", choices=("native_user", "project_outcome"), default="native_user")
     parser.add_argument("--owner-id")
     parser.add_argument("--parent-request-id")
+    parser.add_argument("--route-id")
     parser.add_argument("--verified-native-writer-released", action="store_true")
     args = parser.parse_args()
     inbox = Inbox(args.root)
@@ -202,6 +238,11 @@ def main():
             if not args.body_file:
                 raise BridgeError("A private message body file is required")
             request_id = submit(inbox, args.event_id, args.body_file.read_text(), args.source, args.owner_id, args.parent_request_id)
+            result = {"status": "saved", "request_id": request_id}
+        elif args.command == "handoff":
+            if not args.body_file:
+                raise BridgeError("A private handoff body file is required")
+            request_id = handoff(inbox, args.route_id, args.owner_id, args.body_file.read_text())
             result = {"status": "saved", "request_id": request_id}
         elif args.command == "release-owner":
             if not args.verified_native_writer_released:
