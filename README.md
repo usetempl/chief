@@ -8,7 +8,7 @@ Coordinate your existing AI leads across projects and track their work on one pr
 
 Open your signed-in **Codex** and paste:
 
-> Read https://raw.githubusercontent.com/templ-fun/chief/main/docs/start.md and set up Chief for me.
+> Read https://raw.githubusercontent.com/usetempl/chief/main/docs/start.md and set up Chief for me.
 
 Codex helps you set up Chief, pick a nickname and build your first board. Start with a signed-in Codex and workspace access. Telegram is optional.
 

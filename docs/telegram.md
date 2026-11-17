@@ -12,7 +12,7 @@ This optional adapter contains code and blank onboarding only. It contains no ot
 
 ## Start in your Codex
 
-Clone https://github.com/templ-fun/chief, open that source folder in your own Codex, and send:
+Clone https://github.com/usetempl/chief, open that source folder in your own Codex, and send:
 
 > Set up this Chief package in a new private workspace. Use my Codex account and a new Telegram bot. Ask whether you may inspect my available project history. Propose my projects and existing owners for review. Use only my context. Follow docs/telegram.md. Keep one coordinator, keep secrets outside Git, and verify real Telegram replies, reply context, /report and restart recovery before saying my setup is complete. Do not change global permissions or model settings.
 

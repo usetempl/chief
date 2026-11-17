@@ -2,7 +2,7 @@
 
 Start with your signed-in Codex. No Git, Python, CLI or package manager is assumed. Paste:
 
-> Read https://raw.githubusercontent.com/templ-fun/chief/main/docs/start.md and set up Chief for me.
+> Read https://raw.githubusercontent.com/usetempl/chief/main/docs/start.md and set up Chief for me.
 
 Chief is instructions and a small task board. Your existing Codex is the coordinator. The core needs only plain files and existing tools. The core runs in your existing Codex session. The optional [Telegram adapter](telegram.md) has separate prerequisites; do not install it unless requested.
 
@@ -20,7 +20,7 @@ Chief is instructions and a small task board. Your existing Codex is the coordin
 After setup, verify Git in the shell Codex actually uses. Stop on a failed command. This recipe uses a new relative folder named `chief-source`. Choose an unused name if it exists:
 
 ```sh
-git clone https://github.com/templ-fun/chief.git chief-source
+git clone https://github.com/usetempl/chief.git chief-source
 ```
 
 3. Read `docs/core.md`. Use existing file tools to create a separate private workspace outside the public clone. Put the core instructions in `AGENTS.md`. Create `projects.md`, `priorities.md` and `tasks/backlog/`, `tasks/todo/`, `tasks/doing/`, `tasks/review/`, `tasks/done/`. Do not overwrite existing files or initialize a public repository for private records.

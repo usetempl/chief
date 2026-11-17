@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2 — 2026-11-16
+
+- Follow the GitHub organization rename to `usetempl/chief`.
+- Update clone commands, onboarding/device guides and the optional Telegram `/setup` links.
+
+Existing release tags and private installation state are preserved.
+
 ## 0.1.1 — 2026-11-16
 
 - Put the Templ-branded architecture diagram in the README.
