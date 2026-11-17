@@ -159,6 +159,60 @@ print('isolated transport passed')
         result = subprocess.run([sys.executable, '-c', probe], cwd=self.workspace, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_extracted_specialist_result_blocked_column_and_live_owner_registry(self):
+        self.prepare()
+        self.assertTrue((self.workspace / 'tasks/blocked').is_dir())
+        probe = r'''
+import asyncio, json, os, re, time
+from pathlib import Path
+from unittest.mock import AsyncMock
+import setup
+workspace = setup.use_workspace(Path.cwd())
+from telegram_bridge import BridgeError, Inbox
+from alfred_appserver import Adapter
+from alfred_local import submit
+from alfred_projects import project_route_tool
+from alfred_report import report
+from operator_policy import ROOT, OWNER_LABEL
+thread = '00000000-0000-4000-8000-000000000002'
+(ROOT/'appserver.json').write_text(json.dumps({'enabled':True,'thread_id':thread}))
+os.chmod(ROOT/'appserver.json', 0o600)
+inbox = Inbox(ROOT)
+code = re.search(r'start=(invite_[A-Za-z0-9_-]+)', Path(inbox.invitation(OWNER_LABEL)).read_text())[1]
+def update(i, text):
+ return {'update_id':i,'message':{'message_id':i,'date':int(time.time())+1,'from':{'id':77},'chat':{'id':77,'type':'private'},'text':text}}
+inbox.ingest(update(1,'/start '+code))
+inbox.ingest(update(2,'Make the walkthrough video'))
+async def verify():
+ adapter = Adapter(inbox, {'thread_id':thread,'socket_path':str(ROOT/'fake.sock')})
+ async def rpc(method, params):
+  if method == 'thread/turns/list': return {'data':[]}
+  return {'turn':{'id':'turn-1'}}
+ adapter.rpc = AsyncMock(side_effect=rpc)
+ await adapter.dispatch_pending()
+ for parent in ('tg:77:999', None):
+  try:
+   submit(inbox, 'bad-'+str(parent), 'Evidence', 'project_outcome', 'codex:'+thread, parent)
+   raise AssertionError('unbound specialist result accepted')
+  except BridgeError:
+   pass
+ key = submit(inbox, 'specialist-1', 'Specialist evidence: render checked', 'project_outcome', 'codex:'+thread, 'tg:77:2')
+ row = inbox.db.execute('SELECT * FROM requests WHERE id=?', (key,)).fetchone()
+ text = adapter.request_text(row, 'check')
+ envelope = json.loads(text.split('\n',1)[1])
+ assert envelope['sender'] == {'actor':'codex:'+thread,'authority':'project_owner_evidence','role':'chief_specialist'}, envelope
+ assert 'one-shot specialist' in text and 'installation_owner' not in json.dumps(envelope['sender'])
+asyncio.run(verify())
+schema = project_route_tool(workspace / 'projects.md')['inputSchema']['properties']['owner_id']
+assert 'enum' not in schema and re.fullmatch(schema['pattern'], 'codex:' + thread)
+card = workspace / 'tasks/blocked/sign-in.md'
+card.write_text('# Sign in\nBlocked by: Fresh team sign-in\nResolver: Pilot Owner\nNext: Sign in\n')
+assert 'BLOCKED (1)' in report(workspace) and 'Blocked by Fresh team sign-in; resolver: Pilot Owner' in report(workspace)
+print('specialist and blocked passed')
+'''
+        result = subprocess.run([sys.executable, '-c', probe], cwd=self.workspace, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_extracted_maintenance_defaults_idle_delivery_and_attribution(self):
         self.prepare()
         probe = r'''

@@ -61,6 +61,24 @@ def current_sender(db, request_id, *, completed_schedule_reply=False):
     return row["label"]
 
 
+def chief_specialist(inbox, actor, parent_request_id):
+    """A one-shot specialist launched by the existing Chief returns evidence as that Chief.
+
+    It is bound to an enrolled human request the configured coordinator actually
+    accepted. It is never a project owner and carries no user or release authority.
+    """
+    from alfred_appserver import load_config
+    config = load_config(inbox.root)
+    if not config or actor != "codex:" + config["thread_id"] or not parent_request_id:
+        return False
+    if not inbox.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='appserver_dispatch'").fetchone():
+        return False
+    accepted = inbox.db.execute("""SELECT 1 FROM appserver_dispatch d LEFT JOIN request_context c ON c.request_id=d.request_id
+        WHERE d.request_id=? AND d.thread_id=? AND d.state IN ('accepted','reconciled')
+        AND COALESCE(c.source,'native_user')='native_user'""", (parent_request_id, config["thread_id"])).fetchone()
+    return accepted is not None and current_sender(inbox.db, parent_request_id) is not None
+
+
 def submit(inbox, event_id, body, source="native_user", actor=None, parent_request_id=None):
     private_root(inbox.root)
     ensure_context(inbox)
@@ -77,7 +95,7 @@ def submit(inbox, event_id, body, source="native_user", actor=None, parent_reque
         parent_request_id = None
     else:
         from alfred_projects import registered_owners
-        if actor not in registered_owners():
+        if actor not in registered_owners() and not chief_specialist(inbox, actor, parent_request_id):
             raise BridgeError("Project outcome actor must be a currently registered owner")
     if parent_request_id:
         recipient = inbox.db.execute("SELECT u.* FROM requests r JOIN users u ON u.user_id=r.user_id "

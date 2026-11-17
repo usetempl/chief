@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0 — 2026-11-17
+
+- Add a `tasks/blocked/` column for real missing input. `alfred_board.py move` requires `Blocked by:` (the concrete missing item) and `Resolver:` (who can supply it). `/report` and the snapshot list blocked cards between Doing and Review. A running owner or an unperformed review is not a blocker.
+- Accept a one-shot specialist's result through `alfred_local.py submit --source project_outcome` when the actor is the configured coordinator and the parent is an enrolled user's request that coordinator accepted. It arrives as labeled specialist evidence with no user, owner or release authority. Its reply can close a still-open parent.
+- Stop freezing project owners into the route tool's enum at thread creation. Calls are checked against the current `projects.md`. A rejected owner returns the current registry.
+- Route briefs and core guidance limit delivery holds to user authority, sign-ins, cost limits, data preservation and privacy. They exclude unrequested reviews, synthetic suites, counters and reporting loops. Completed output moves to Review or Done when delivered. Canceled work leaves Doing.
+
+Migration: `tasks/blocked/` is created on first use. Restart the one collector at a safe boundary to load the new report and attribution code. Existing coordinators keep their creation-time tool schema; owner checks already use the live registry. Saved report numbers still resolve against the delivered report.
+
 ## 0.1.5 — 2026-11-17
 
 - Use one entry page at `https://usetempl.com/chief` for host setup, Dot/mobile and additional devices.

@@ -36,6 +36,7 @@ Use one Markdown file per task. Its folder is its status. Move the same file whe
 | `tasks/backlog/` | Uncommitted ideas, research follow-ups and parked possibilities. |
 | `tasks/todo/` | Committed next work, plus recurring tasks waiting for their next scheduled date. |
 | `tasks/doing/` | Work an owner is actively implementing or checking. |
+| `tasks/blocked/` | Work stopped by real missing input. Record `Blocked by:` (the concrete missing item) and `Resolver:` (who can supply it). |
 | `tasks/review/` | A concrete result awaits a named human's review, acceptance or decision. |
 | `tasks/done/` | A verified outcome with completion evidence and any required human acceptance. |
 
@@ -43,11 +44,13 @@ Research results enter Backlog unless the user commits to the next action. Promo
 
 Record the goal, owner, current evidence/check time, next step and required input. A review card must name `Reviewer:` and the exact decision. AI reviews, technical blockers and unfinished fixes do not belong in human review. Keep their actual state and next action explicit. Do not maintain a second task database.
 
+A running owner, pending agent work or an unperformed extra review is not a blocker. Completed output moves to `review` (or `done`) when it is delivered, even if an automatic callback failed. Canceled work leaves `doing`. Delivery holds are only the user's release/account authority, a human sign-in, a cost limit, real data preservation and privacy. Do not add unrequested reviews, synthetic suites, case counters, reporting loops or dependencies that are already satisfied. Repeat checks only after a failure or material change.
+
 For an explicitly authorized recurring task, record the cadence, timezone, next run and last completed run with evidence. After completion and any required acceptance, retain that evidence and return the same card to `todo` with its next run. Do not advance an incomplete run or overlap runs. These files do not execute schedules. Without a separately authorized, configured scheduler, start the next run on user request.
 
 Update records when scope, assignment, outcome or a real blocker changes. Saved status is dated evidence, not a fresh live check. Keep implementation details with the project.
 
-When asked for a report, show all saved `backlog`, `todo`, `doing` and human `review` items, their next runs and five recent completions. Include completed recurring runs even after their cards return to `todo`. Keep reports concise and use pages when needed. The core does not install a `/report` bot command.
+When asked for a report, show all saved `backlog`, `todo`, `doing`, `blocked` and human `review` items, their next runs and five recent completions. Include completed recurring runs even after their cards return to `todo`. Keep reports concise and use pages when needed. The core does not install a `/report` bot command.
 
 Use private storage for operational records, outside the public clone. Keep credentials and account sessions out of task files and Git. Never publish private state or histories during setup.
 

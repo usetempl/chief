@@ -8,7 +8,7 @@ import re
 
 FIELDS = ("Report name", "Report group", "Emoji", "Priority", "Project mode",
           "Updated", "Snapshot", "Last done", "Next", "Needs input")
-STATES = {"doing": 0, "todo": 1, "review": 2, "backlog": 3, "done": 4}
+STATES = {"doing": 0, "blocked": 1, "todo": 2, "review": 3, "backlog": 4, "done": 5}
 
 
 def read_cards(root, input_field="Needs input"):
@@ -25,7 +25,7 @@ def read_cards(root, input_field="Needs input"):
                 content = ""
             for line in content.splitlines():
                 match = re.match(r"^([^:]+):\s*(.*?)\s*$", line)
-                if match and match.group(1) in (*FIELDS, input_field, "Progress estimate", "Usable version", "Reviewer"):
+                if match and match.group(1) in (*FIELDS, input_field, "Progress estimate", "Usable version", "Reviewer", "Blocked by", "Resolver"):
                     key = "Needs input" if match.group(1) == input_field else match.group(1)
                     values.setdefault(key, match.group(2))
             values["_state"] = state
@@ -82,7 +82,7 @@ def render(root, input_field="Needs input", excluded_names=()):
         key = name.casefold() if name else "\0" + card["_path"]
         groups.setdefault(key, []).append(card)
 
-    sections = {name: [] for name in ("Work", "Hobby", "Review", "Backlog", "Parked", "Completed", "Needs attention", "Operations")}
+    sections = {name: [] for name in ("Work", "Hobby", "Blocked", "Review", "Backlog", "Parked", "Completed", "Needs attention", "Operations")}
     selected = []
     for entries in groups.values():
         entries.sort(key=lambda c: (STATES[c["_state"]], c["_path"]))
@@ -116,6 +116,10 @@ def render(root, input_field="Needs input", excluded_names=()):
         if card["_state"] == "backlog":
             line = f"{prefix}: {value(card, 'Snapshot')} Not committed. Next decision: {value(card, 'Next')}. {version}"
             sections["Backlog"].append((order(card), line))
+        elif card["_state"] == "blocked":
+            issues.extend(field for field in ("Blocked by", "Resolver") if not card.get(field, "").strip())
+            line = f"{prefix}: {value(card, 'Snapshot')} Blocked by: {value(card, 'Blocked by')}. Resolver: {value(card, 'Resolver')} ({date}). {version}"
+            sections["Blocked"].append((order(card), line))
         elif card["_state"] == "review":
             if not card.get("Reviewer", "").strip():
                 issues.append("Reviewer")

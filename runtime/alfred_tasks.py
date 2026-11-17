@@ -13,7 +13,7 @@ from pathlib import Path
 import re
 import stat
 import tempfile
-from alfred_board import STATES, prepare_move, finish_move, pending_move, stamp
+from alfred_board import STATES, blocker, prepare_move, finish_move, pending_move, stamp
 
 ATTRIBUTION = (
     "A previously authorized recurring task is due. This is a scheduler notice, "
@@ -123,6 +123,8 @@ def save_move(path, state, text, *, expected=None, reason="Workflow transition",
     if state not in STATES or path.parent.name not in STATES or root.name != "tasks":
         raise ValueError("Use a card directly inside a canonical task column")
     stamp(now)
+    if state == "blocked":
+        blocker(text)
     if root.is_symlink() or path.parent.is_symlink() or (root / state).is_symlink():
         raise ValueError("Task columns cannot be symlinks")
     recovered = pending_move(original) is not None

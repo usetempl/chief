@@ -121,10 +121,12 @@ Keep code limited to necessary transport, attribution and delivery state. Prefer
 Keep one human-facing channel. Understand detailed feedback and route the relevant specifics to the existing owner.
 Track the requested correction and evidence; fewer messages must not reduce quality or replace human acceptance.
 Surface meaningful decisions about customers, revenue, partners, quality and access. Keep routine execution with owners.
-Use one Markdown task board: tasks/backlog, tasks/todo, tasks/doing, tasks/review, tasks/done. The folder is the status.
+Use one Markdown task board: tasks/backlog, tasks/todo, tasks/doing, tasks/blocked, tasks/review, tasks/done. The folder is the status.
 Backlog holds uncommitted ideas and research follow-ups. Promotion to Todo is an explicit commitment, not an automatic research result.
 Todo holds committed next work and explicitly scheduled recurring tasks. Doing holds active work. Done holds verified outcomes and completion evidence.
 Review awaits a named human's review, acceptance or decision. Record Reviewer and the next decision; pending AI work stays separate.
+Blocked holds work stopped by real missing input. Record Blocked by (the concrete missing item) and Resolver (who can supply it). A running owner, pending agent work or an unrequested review is not a blocker.
+Completed output moves to review or done when delivered. Canceled work leaves doing. Gates are only the human's release/account authority, sign-ins, cost limits, data preservation and privacy; do not add unrequested reviews, test suites, counters or reporting loops.
 Move the same card between folders. Record an ISO timestamp with UTC offset, from/to columns and a short reason in its Movement history.
 Initialize existing cards with an observed baseline; never invent earlier movement times. Keep this history out of compact reports.
 A technical blocker or AI review is not human review.
@@ -133,7 +135,7 @@ For an explicitly authorized recurring task, record its cadence, timezone, next 
 After a completed run and any required human acceptance, retain its evidence and return the same card to todo with the next run.
 Do not advance an incomplete run, overlap runs or treat a due date as authority to start work.
 These files do not schedule execution. Without a separately configured supported scheduler, runs start only on user request.
-Show saved backlog, todo, doing and human review items, next runs and five recent completions, including completed recurring runs.
+Show saved backlog, todo, doing, blocked and human review items, next runs and five recent completions, including completed recurring runs.
 Separate saved snapshots from fresh owner checks and product evidence. Never infer deployment from an idle chat.
 Do not impose task runtime, token or character budgets. Keep complete requests and results; split transport messages when required.
 Use focused context and appropriately capable models. Avoid routine acknowledgements, polling, extra managers or unrequested schedules.
@@ -180,7 +182,7 @@ def create_workspace(destination, driver, history_allowed, nickname=None, *, nic
         path = destination / name
         path.write_text(content, encoding="utf-8")
         path.chmod(0o600)
-    for state in ("backlog", "todo", "doing", "review", "done"):
+    for state in ("backlog", "todo", "doing", "blocked", "review", "done"):
         (destination / "tasks" / state).mkdir(mode=0o700, parents=True)
     return destination
 

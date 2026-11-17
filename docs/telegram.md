@@ -165,8 +165,21 @@ After the authorized action, verify recovery and use `alfred_telegram_reply` for
 New installations register this tool with the existing `thread/start.dynamicTools` path.
 The inspected 0.169.0 schema accepts `dynamicTools` only on `thread/start`; it exposes no update method for an existing thread.
 A collector restart alone does not add a tool to an older coordinator.
+The project-route tool lists owners known at creation but has no owner enum; each call is checked against the current `projects.md`, so a later registered owner is routable from an existing coordinator. A rejected owner returns the current registry.
 Use the local operator CLI below when the existing thread lacks the notice tool. Do not create another coordinator or edit Codex private state.
 The [official app-server guide](https://learn.chatgpt.com/docs/app-server#start-or-resume-a-thread) documents initial registration and restoration on resume.
+
+### One-shot specialist results
+
+When the coordinator launches a one-shot specialist for an accepted request, the launcher can return its final result once after the specialist exits:
+
+```
+COS_WORKSPACE="$PWD" .venv/bin/python runtime/alfred_local.py submit --root "$PWD/.private" \
+  --event-id STABLE-ID --source project_outcome \
+  --owner-id codex:COORDINATOR-THREAD-ID --parent-request-id ORIGINAL-REQUEST-ID --body-file RESULT.txt
+```
+
+The actor must be this installation's configured coordinator, and the parent must be an enrolled user's request that the coordinator accepted. Derived, scheduled, maintenance or unaccepted parents are rejected. The result reaches the coordinator as specialist evidence for the original recipient. It is not a user instruction, project owner or release approval. The stable event ID deduplicates; a rejected or uncertain submission is never replayed automatically.
 
 ### Existing-thread advance notice
 
@@ -208,7 +221,7 @@ Source tests and package fixtures do not prove live Telegram delivery or service
 
 ## Recovery
 
-Your project board is `projects.md` plus `tasks/backlog`, `tasks/todo`, `tasks/doing`, `tasks/review` and `tasks/done`. Backlog is uncommitted; Todo is committed next work or a scheduled recurrence. Keep timestamped column moves inside the card. Review awaits a named human's decision or acceptance. `/report` includes all open cards and five recent completions, paginated without model or live-agent calls. Keep this source and accepted context in your own private Git repository. `.private/` holds the bot credential, invitation, enrollment, one coordinator ID and the durable inbox/outbox. It is excluded from Git, as is `.venv/`. Git alone does not restore authentication or pending delivery.
+Your project board is `projects.md` plus `tasks/backlog`, `tasks/todo`, `tasks/doing`, `tasks/blocked`, `tasks/review` and `tasks/done`. Backlog is uncommitted; Todo is committed next work or a scheduled recurrence. Blocked names the missing input and its resolver; `alfred_board.py move` refuses a blocked card without them. Keep timestamped column moves inside the card. Review awaits a named human's decision or acceptance. `/report` includes all open cards and five recent completions, paginated without model or live-agent calls. Keep this source and accepted context in your own private Git repository. `.private/` holds the bot credential, invitation, enrollment, one coordinator ID and the durable inbox/outbox. It is excluded from Git, as is `.venv/`. Git alone does not restore authentication or pending delivery.
 
 For one authorized image reply through `alfred_telegram_reply`, start `body` with `![Description](https://public-host/image.png)` on its own first line. The rest is a caption with optional Markdown formatting. Captions over 1024 UTF-16 units follow the image as text messages. Only a public HTTPS URL without credentials, query or fragment is supported; no local file is opened. The same recipient guard, outbox and uncertain-delivery rules apply. Telegram receives the image URL and returns a photo receipt; ordinary replies remain text. Never publish private content just to use this route.
 

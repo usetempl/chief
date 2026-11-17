@@ -5,7 +5,7 @@ import re
 
 from operator_policy import WORKSPACE as ROOT
 
-STATES = ("backlog", "todo", "doing", "review", "done")
+from alfred_board import STATES
 
 
 def active_claude():
@@ -58,7 +58,8 @@ def saved_time(row, field="Updated"):
 def report(root=ROOT, db=None, live_claude=None):
     rows = cards(root)
     lines = ["Chief kanban — saved task board", "Use the task numbers from this report; the next report can renumber them.",
-             "Backlog: uncommitted ideas/research. Todo: committed next work or scheduled recurrence. Review: a named human's decision."]
+             "Backlog: uncommitted ideas/research. Todo: committed next work or scheduled recurrence. "
+             "Blocked: real missing input and who can supply it. Review: a named human's decision."]
     task_number = 0
     for state in STATES[:-1]:
         current = sorted((row for row in rows if row["state"] == state),
@@ -67,6 +68,9 @@ def report(root=ROOT, db=None, live_claude=None):
         for row in current:
             next_step = compact(row.get("Next") or row.get("Snapshot") or "Next step unavailable")
             review = compact(row.get("Reviewer") or "Reviewer not recorded") + ": " if state == "review" else ""
+            if state == "blocked":
+                review = ("Blocked by " + compact(row.get("Blocked by") or "missing input not recorded") + "; resolver: "
+                          + compact(row.get("Resolver") or "not recorded") + ". ")
             parked = " [parked]" if row.get("Project mode") == "parked" else ""
             recurring = " [recurring; next " + compact(row.get("Next run", "not set")) + "]" if row.get("Recurrence") else ""
             task_number += 1

@@ -6,9 +6,25 @@ import json
 from pathlib import Path
 import re
 
-STATES = ("backlog", "todo", "doing", "review", "done")
+STATES = ("backlog", "todo", "doing", "blocked", "review", "done")
 HEADING = "## Movement history"
 PENDING = re.compile(r"^<!-- chief-move: (.+) -->\n?", re.M)
+BLOCKER_FIELDS = ("Blocked by", "Resolver")
+
+
+def blocker(text):
+    """Blocked means real missing input: the concrete missing item and who can supply it.
+
+    A running owner, pending agent work or an unperformed extra review is not a blocker.
+    """
+    values = {}
+    for name in BLOCKER_FIELDS:
+        match = re.search(r"^" + re.escape(name) + r":[ \t]*(.*?)[ \t]*$", text, re.M)
+        value = match[1] if match else ""
+        if value.casefold().strip(".") in {"", "none", "n/a", "unknown", "tbd", "unavailable"}:
+            raise ValueError("A blocked card needs 'Blocked by:' (the concrete missing input) and 'Resolver:' (who can supply it)")
+        values[name] = value
+    return values
 
 
 def stamp(now=None):

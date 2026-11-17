@@ -130,7 +130,7 @@ class OnboardingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             destination = onboard.create_workspace(Path(temporary) / "board", "codex", False)
             self.assertEqual({path.name for path in (destination / "tasks").iterdir()},
-                             {"backlog", "todo", "doing", "review", "done"})
+                             {"backlog", "todo", "doing", "blocked", "review", "done"})
             self.assertEqual(list((destination / "tasks").glob("*/*")), [])
             context = (destination / "COORDINATOR.md").read_text()
             self.assertIn("Review awaits a named human", context)
