@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import time
 
 from alfred_local import private_root
 from history_safety import redact
@@ -160,26 +161,65 @@ def outcome_receipt(request_id, owner_id, root=ROOT):
         return output
 
 
+MAX_WAIT = 900
+READ_INTERVAL = 1.0
+
+
+def wait_result(request_id, seconds, root=ROOT, *, sleep=time.sleep, clock=time.monotonic):
+    """Reread one exact request until its saved answer exists or an I/O deadline passes.
+
+    Each read is the complete single-snapshot result(): a new read-only connection
+    that is closed again, with the same identity and enrollment checks. It never
+    submits, wakes Chief, calls a model or runs in the background. On timeout the
+    true pending snapshot is returned so the caller can resume with the same ID.
+    """
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not 0 < seconds <= MAX_WAIT:
+        raise ValueError("Wait must be between 1 and 900 seconds")
+    deadline = clock() + seconds
+    while True:
+        output = result(request_id, root)
+        waiting = (output["status"] == "found" and output["answer_state"] == "unavailable"
+                   and output["request_state"] in {"pending", "processing"})
+        if not waiting:
+            if output["status"] == "found":
+                output["wait_state"] = "answer_saved" if output["answer_state"] == "saved" else "finished_without_answer"
+            return output
+        remaining = deadline - clock()
+        if remaining <= 0:
+            output["wait_state"] = "timed_out_pending"
+            output["resume"] = "Read this same request_id again; do not submit again."
+            return output
+        sleep(min(READ_INTERVAL, remaining))
+
+
 def main(argv=None):
     parser = SafeParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True, parser_class=SafeParser)
     read = commands.add_parser("result", help="Read one local owner request and its saved answer")
     read.add_argument("--request-id", required=True, help="Exact local: ID returned by alfred_local.py submit")
     read.add_argument("--root", type=Path, default=ROOT, help="Existing owner-only bridge storage")
+    read.add_argument("--wait", type=int, metavar="SECONDS",
+                      help="Reread this request until its saved answer exists, up to 1-900 seconds")
     receipt = commands.add_parser("outcome", help="Read delivery metadata for this owner's own published outcome")
     receipt.add_argument("--request-id", required=True, help="Exact local: ID returned by alfred_local.py submit or handoff")
     receipt.add_argument("--owner-id", required=True, help="The publishing owner's registered identity")
     receipt.add_argument("--root", type=Path, default=ROOT, help="Existing owner-only bridge storage")
     args = parser.parse_args(argv)
     try:
-        output = (outcome_receipt(args.request_id, args.owner_id, args.root) if args.command == "outcome"
-                  else result(args.request_id, args.root))
+        if args.command == "outcome":
+            output = outcome_receipt(args.request_id, args.owner_id, args.root)
+        elif args.wait is not None:
+            output = wait_result(args.request_id, args.wait, args.root)
+        else:
+            output = result(args.request_id, args.root)
     except (BridgeError, OSError, sqlite3.Error, ValueError):
         # Never echo paths, database diagnostics, credentials or untrusted values.
         print(json.dumps({"error": "Result unavailable; verify exact local ID, private storage and schema"}))
         return 1
     print(json.dumps(output, ensure_ascii=True))
-    return 0 if output["status"] == "found" else 3
+    if output["status"] != "found":
+        return 3
+    return 4 if output.get("wait_state") == "timed_out_pending" else 0
 
 
 if __name__ == "__main__":

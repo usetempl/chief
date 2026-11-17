@@ -148,5 +148,5 @@ def done(root=ROOT, page=1):
 
 def report_pages(root=ROOT, db=None):
     """Never drop cards to fit one message; each page stays within Telegram's UTF-16 limit."""
-    from telegram_bridge import text_parts
-    return text_parts(report(root, db))
+    from telegram_bridge import reply_parts
+    return reply_parts("result:report:preview", report(root, db))

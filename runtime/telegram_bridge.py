@@ -125,6 +125,13 @@ def photo_reply(key, body):
     return {"photo": url, "caption": caption}
 
 
+def report_first_part(key, text):
+    """Keep BACKLOG first on the owner's report, including multipart replies."""
+    if key.startswith("result:report:"):
+        return re.sub(r"^\[1/[0-9]+\]\n(?=BACKLOG(?:\s|\())", "", text, count=1)
+    return text
+
+
 def reply_parts(key, body):
     parts = text_parts(body)  # Validate the complete body before storing it.
     photo = photo_reply(key, body)
@@ -133,6 +140,7 @@ def reply_parts(key, body):
             return [body]
         # Send the image once, then its complete caption as ordinary text.
         return [body.partition("\n")[0], *text_parts(photo["caption"])]
+    parts[0] = report_first_part(key, parts[0])
     return parts
 
 
@@ -381,6 +389,14 @@ class Inbox:
             return
         plan = delivery_plan(PREFIX + text, text_parts, photo_reply(key, PREFIX + text))
         if plan:
+            if plan[0]["method"] == "sendMessage":
+                payload = plan[0]["payload"]
+                first = report_first_part(key, payload["text"])
+                removed = len(payload["text"]) - len(first)  # The removed counter is ASCII.
+                if removed:
+                    payload["text"] = first
+                    payload["entities"] = [entity | {"offset": entity["offset"] - removed}
+                                           for entity in payload.get("entities", [])]
             parts = [wire_body(item) for item in plan]
         outstanding = self.outstanding_parts(chat)
         # Backpressure counts pending replies, not the length of one answer.

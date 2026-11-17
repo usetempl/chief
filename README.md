@@ -21,10 +21,10 @@ Coordinate your existing AI leads across projects and track their work on one pr
    In Dot, paste:
 
    ```text
-   Read https://usetempl.com/chief. Connect Dot to my existing Chief. I want to operate my host computer from my phone.
+   Read https://usetempl.com/chief. Connect Dot to my existing Chief through my authenticated host command tool. Use the installed submit/result commands and return the saved answer "Dot connection confirmed" here.
    ```
 
-   Dot needs a supported, authenticated connection. Your host must stay awake and online.
+   Dot needs authenticated command access to the host. Your host must stay awake and online. Setup is complete when the saved answer returns to your phone.
 
 3. **Add devices and assign work**
 

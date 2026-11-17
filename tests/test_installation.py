@@ -149,6 +149,16 @@ async def verify():
  completed=inbox.db.execute("SELECT body FROM outbox WHERE id='result:done:tg:77:6'").fetchone()
  assert completed and completed[0].startswith('DONE — page 1 of 1')
  assert inbox.db.execute("SELECT count(*) FROM requests WHERE message_id IN (5,6)").fetchone()[0] == 0
+ for styled in (False, True):
+  label='**Example**' if styled else 'Example'
+  body='BACKLOG (0)\n'+label+'\n'+'Saved task.\n'*600
+  key='result:report:long:'+str(styled)
+  inbox.reply(key,77,body)
+  parts=inbox.db.execute('SELECT body FROM outbox_parts WHERE outbox_id=? ORDER BY part_index',(key,)).fetchall()
+  assert len(parts)>1 and parts[0][0].startswith('BACKLOG (0)\n')
+  if styled:
+   plan=json.loads(inbox.db.execute('SELECT delivery_plan FROM outbox WHERE id=?',(key,)).fetchone()[0])
+   assert plan[0]['payload']['entities'][0]=={'type':'bold','offset':12,'length':7}
  inbox.db.close()
  restarted=Inbox(ROOT)
  new=Adapter(restarted,config)
@@ -250,6 +260,14 @@ api = Mock()
 inbox.flush(api)
 assert 'Preference saved' not in repr(api.mock_calls), api.mock_calls
 assert inbox.db.execute("SELECT status FROM outbox WHERE id='result:tg:77:4'").fetchone()[0] == 'suppressed'
+import alfred_entry
+native = submit(inbox, 'dot-fixture', 'Reply exactly "Dot connection confirmed".')
+os.chmod(ROOT/'inbox.sqlite', 0o600)
+def arrive(_):
+ with inbox.db:
+  inbox.db.execute("INSERT INTO outbox(id,chat_id,body,status,created) VALUES (?,77,'Dot connection confirmed','pending',1)", ('result:'+native,))
+waited = alfred_entry.wait_result(native, 30, ROOT, sleep=arrive, clock=lambda: 0)
+assert (waited['request_id'], waited['wait_state'], waited['answer']) == (native, 'answer_saved', 'Dot connection confirmed'), waited
 print('specialist and blocked passed')
 '''
         result = subprocess.run([sys.executable, '-c', probe], cwd=self.workspace, capture_output=True, text=True)

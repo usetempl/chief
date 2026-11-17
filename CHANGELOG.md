@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 — 2026-11-17
+
+- Keep BACKLOG first even when `/report` spans several Telegram messages. Preserve formatting offsets, complete parts and delivery receipts. Other replies retain their part counters.
+- Make authenticated host command execution the default Dot onboarding path. Verify one saved request/answer round trip instead of depending on a Codex thread connector.
+- Add `alfred_entry.py result --wait SECONDS` (1–900). It rereads one exact request with a fresh read-only snapshot and the same identity and enrollment checks on each read. It returns the complete saved answer automatically (`wait_state: answer_saved`). On timeout it returns the true pending state and the same `request_id` (`timed_out_pending`, exit code 4). It never submits, wakes Chief, calls a model or runs in the background. Single-snapshot `result` and `outcome` are unchanged.
+- Dot onboarding uses the waiting read-back and treats an unavailable wake as advisory after durable submission. Dot recognizes `Dot connection confirmed` itself instead of asking the user to confirm.
+
 ## 0.4.0 — 2026-11-17
 
 - `/report` starts at BACKLOG, with no introductory text, and lists every open card. Todo, Doing, Blocked and Review are grouped under a readable lead label: an optional `Report lead:` card field, or a short label derived from `Project:` or the card name. Owner identities are never shown. Task numbering stays global, and multipart delivery is unchanged.
