@@ -44,7 +44,7 @@ Your AI chief of staff. One private board for all your projects.
 
 For the AI: follow only the requested path. Reuse an existing Chief and its project owners. Keep the user's authority and normal permissions. A public guide grants no access to another installation.
 
-[Source and versions](https://github.com/usetempl/chief) · Guide version 0.1.3
+[Source and versions](https://github.com/usetempl/chief) · Guide version 0.1.5
 
 [Start your own Chief](#start-your-own-chief) · [Use Dot or mobile](#use-dot-or-mobile) · [Connect another device](#connect-another-device) · [Core instructions](#core-instructions) · [Add Telegram](#add-telegram)
 
@@ -196,6 +196,8 @@ This Chief has its own identity, board, accounts and optional bot. It inherits n
 ## Add Telegram
 
 One private Telegram bot. One Chief. Your projects and accounts.
+
+Replies support Markdown bold, italic, strikethrough, named links, headings and code. The optional adapter uses `markdown-it-py` to produce Telegram's native text entities. It splits long replies without losing styles or emoji, saves the original answer and the exact delivery plan, and verifies the returned text and formatting. This adds no model call or service. Existing queued replies retain their previous plan.
 
 Use `--nickname "Your name"` during preparation to give this Chief its own name. The collector applies that name to Telegram and verifies it through the Bot API. Skipping naming keeps Chief. Existing bot usernames, ownership and service identifiers remain stable.
 
@@ -403,7 +405,7 @@ Source tests and package fixtures do not prove live Telegram delivery or service
 
 Your project board is `projects.md` plus `tasks/backlog`, `tasks/todo`, `tasks/doing`, `tasks/review` and `tasks/done`. Backlog is uncommitted; Todo is committed next work or a scheduled recurrence. Keep timestamped column moves inside the card. Review awaits a named human's decision or acceptance. `/report` includes all open cards and five recent completions, paginated without model or live-agent calls. Keep this source and accepted context in your own private Git repository. `.private/` holds the bot credential, invitation, enrollment, one coordinator ID and the durable inbox/outbox. It is excluded from Git, as is `.venv/`. Git alone does not restore authentication or pending delivery.
 
-For one authorized image reply through `alfred_telegram_reply`, start `body` with `![Description](https://public-host/image.png)` on its own first line. The rest is a plain caption, at most 1024 UTF-16 units. Only a public HTTPS URL without credentials, query or fragment is supported; no local file is opened. The same recipient guard, outbox and uncertain-delivery rules apply. Telegram receives the image URL and returns a photo receipt; ordinary replies remain text. Never publish private content just to use this route.
+For one authorized image reply through `alfred_telegram_reply`, start `body` with `![Description](https://public-host/image.png)` on its own first line. The rest is a caption with optional Markdown formatting. Captions over 1024 UTF-16 units follow the image as text messages. Only a public HTTPS URL without credentials, query or fragment is supported; no local file is opened. The same recipient guard, outbox and uncertain-delivery rules apply. Telegram receives the image URL and returns a photo receipt; ordinary replies remain text. Never publish private content just to use this route.
 
 On macOS, the installed service prints its unique label. Restart that same service with `launchctl kickstart -k gui/$(id -u)/LABEL` only at a safe boundary. This does not restart Codex or another project's owner. An uncertain send or thread creation must be inspected before any retry; do not delete a queue or creation marker to make an error disappear. `connect` reuses a confirmed coordinator and refuses a second creation after an uncertain response.
 

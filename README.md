@@ -57,7 +57,7 @@ The core uses Markdown instructions and records. Your Codex model decides where 
 | **Board** | `tasks/<column>/*.md` holds each task. **Backlog** holds ideas, **Todo** committed work, **Doing** active work, **Review** human decisions, and **Done** verified outcomes. Moves retain timestamps. |
 | **Memory** | Codex handles context and compaction. Markdown keeps durable facts. Project owners keep detailed evidence. Private Git backups are optional. Chief reads relevant records. |
 | **Telegram · optional** | Python 3.12+, its standard library and pinned `websockets` connect to Codex's app-server. Enrollment controls access. SQLite holds requests, the outbox and delivery receipts. |
-| **Reports & replies** | The adapter's `/report` reads saved cards without model calls. Replies split at Telegram's message limit and record each part's delivery. |
+| **Reports & replies** | `/report` reads saved cards without model calls. `markdown-it-py` parses reply formatting into Telegram entities. Numbered parts retain their styles and delivery receipts. |
 
 ![Chief by Templ: request flow, project leads, board and memory](docs/architecture.png)
 

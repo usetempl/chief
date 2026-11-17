@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.request
 
 from history_safety import redact
+from telegram_format import delivery_plan, receipt_entities_match
 from operator_policy import ROOT, BOT, OWNER_LABEL, CONTACT_LABEL, INVITE_FILES, CHIEF_NAME, CHIEF_NICKNAME
 
 PREFIX = ""  # Telegram has its own bot identity; the Alfred prefix is WhatsApp-only.
@@ -142,15 +143,26 @@ def receipt_text_matches(actual, expected):
     return isinstance(actual, str) and actual in (expected, expected.strip(" \n"))
 
 
-def valid_text_receipt(result, chat, text):
+def wire_body(item):
+    """A stable per-part body for the existing durable receipt mechanism."""
+    if item["method"] == "sendMessage":
+        return item["payload"]["text"]
+    if item["method"] == "sendPhoto":
+        return json.dumps(item["payload"], sort_keys=True)
+    raise BridgeError("Unsupported reply payload")
+
+
+def valid_text_receipt(result, chat, text, entities=None):
     return (isinstance(result, dict) and receipt_text_matches(result.get("text"), text)
+            and receipt_entities_match(result.get("entities"), entities, text, result.get("text"))
             and isinstance(result.get("chat"), dict)
             and type(result["chat"].get("id")) is int and result["chat"]["id"] == chat
             and type(result.get("message_id")) is int and result["message_id"] > 0)
 
 
-def valid_photo_receipt(result, chat, caption):
+def valid_photo_receipt(result, chat, caption, entities=None):
     if (not isinstance(result, dict) or not receipt_text_matches(result.get("caption", ""), caption)
+            or not receipt_entities_match(result.get("caption_entities"), entities, caption, result.get("caption", ""))
             or not isinstance(result.get("chat"), dict) or type(result["chat"].get("id")) is not int
             or result["chat"]["id"] != chat or type(result.get("message_id")) is not int
             or result["message_id"] <= 0):
@@ -315,7 +327,8 @@ class Inbox:
             if "reply_to_id" not in request_columns:
                 self.db.execute("ALTER TABLE requests ADD COLUMN reply_to_id INTEGER")
             columns = {row[1] for row in self.db.execute("PRAGMA table_info(outbox)")}
-            for column, spec in (("attempts", "INTEGER NOT NULL DEFAULT 0"), ("next_attempt", "REAL NOT NULL DEFAULT 0")):
+            for column, spec in (("attempts", "INTEGER NOT NULL DEFAULT 0"), ("next_attempt", "REAL NOT NULL DEFAULT 0"),
+                                 ("delivery_plan", "TEXT")):
                 if column not in columns:
                     self.db.execute("ALTER TABLE outbox ADD COLUMN " + column + " " + spec)
             self.db.execute("INSERT OR IGNORE INTO meta VALUES ('offset','0')")
@@ -361,6 +374,9 @@ class Inbox:
         parts = reply_parts(key, PREFIX + text)
         if self.db.execute("SELECT 1 FROM outbox WHERE id=?", (key,)).fetchone():
             return
+        plan = delivery_plan(PREFIX + text, text_parts, photo_reply(key, PREFIX + text))
+        if plan:
+            parts = [wire_body(item) for item in plan]
         outstanding = self.outstanding_parts(chat)
         # Backpressure counts pending replies, not the length of one answer.
         pending_replies = self.db.execute("SELECT COUNT(*) FROM outbox WHERE chat_id=? AND status!='sent'", (chat,)).fetchone()[0]
@@ -372,8 +388,8 @@ class Inbox:
             recent = self.db.execute("SELECT COUNT(*) FROM outbox WHERE chat_id=? AND created>?", (chat, time.time() - 3600)).fetchone()[0]
             if recent >= 60 or outstanding >= 200:
                 return  # Bound command/rejection responses as well as accepted feedback.
-        inserted = self.db.execute("INSERT OR IGNORE INTO outbox(id,chat_id,body,created) VALUES (?,?,?,?)",
-                                   (key, chat, PREFIX + text, time.time())).rowcount
+        inserted = self.db.execute("INSERT OR IGNORE INTO outbox(id,chat_id,body,created,delivery_plan) VALUES (?,?,?,?,?)",
+                                   (key, chat, PREFIX + text, time.time(), json.dumps(plan) if plan else None)).rowcount
         if not inserted:
             return  # A concurrent enqueue already owns this answer and its receipts.
         # Keep the original body and aggregate receipt for existing callers.
@@ -567,8 +583,11 @@ class Inbox:
         budget = 20
         for row in self.db.execute("SELECT * FROM outbox WHERE status='pending' AND next_attempt<=? ORDER BY created LIMIT 20", (time.time(),)).fetchall():
             try:
-                bodies = reply_parts(row["id"], row["body"])
-            except BridgeError:
+                # Freeze rendered text/entities at enqueue time. Existing queued
+                # replies retain their original plan, including after an upgrade.
+                plan = json.loads(row["delivery_plan"]) if row["delivery_plan"] else None
+                bodies = [wire_body(item) for item in plan] if plan else reply_parts(row["id"], row["body"])
+            except (BridgeError, ValueError, TypeError, KeyError):
                 with self.db:
                     self.db.execute("UPDATE outbox SET status='failed' WHERE id=? AND status='pending'", (row["id"],))
                 continue
@@ -584,7 +603,7 @@ class Inbox:
                 with self.db:
                     self.db.execute("UPDATE outbox SET status='failed' WHERE id=?", (row["id"],))
                 continue
-            for part in parts or [row]:
+            for index, part in enumerate(parts or [row]):
                 if part["status"] == "sent":
                     continue
                 if part["status"] != "pending" or part["next_attempt"] > time.time() or budget <= 0:
@@ -599,7 +618,11 @@ class Inbox:
                     with self.db:
                         self.db.execute("UPDATE outbox SET status='failed' WHERE id=? AND status='pending'", (row["id"],))
                     break
-                photo = photo_reply(row["id"], part["body"])
+                wire = plan[index] if plan else None
+                photo = (wire["payload"] if wire and wire["method"] == "sendPhoto" else
+                         None if wire else photo_reply(row["id"], part["body"]))
+                payload = (wire["payload"] if wire else photo if photo else
+                           {"text": part["body"], "link_preview_options": {"is_disabled": True}})
                 with self.db:
                     # Collector and adapter may both flush. Claim the current part
                     # inside the write transaction, not from its cached status.
@@ -621,11 +644,9 @@ class Inbox:
                 budget -= 1
                 state, next_attempt, telegram_id = "uncertain", 0, None
                 try:
-                    result = (api.call("sendPhoto", {"chat_id": row["chat_id"], **photo}) if photo else
-                              api.call("sendMessage", {"chat_id": row["chat_id"], "text": part["body"],
-                                                       "link_preview_options": {"is_disabled": True}}))
-                    verified = (valid_photo_receipt(result, row["chat_id"], photo["caption"]) if photo else
-                                valid_text_receipt(result, row["chat_id"], part["body"]))
+                    result = api.call("sendPhoto" if photo else "sendMessage", {"chat_id": row["chat_id"], **payload})
+                    verified = (valid_photo_receipt(result, row["chat_id"], payload["caption"], payload.get("caption_entities")) if photo else
+                                valid_text_receipt(result, row["chat_id"], payload["text"], payload.get("entities")))
                     if verified:
                         state, telegram_id = "sent", result["message_id"]
                 except BridgeError as error:

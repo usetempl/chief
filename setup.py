@@ -20,7 +20,7 @@ PACKAGE = Path(__file__).resolve().parent
 PACKAGE_FILES = {
     "setup.py", "windows_service.py", "onboard.py", "snapshot.py", "requirements.txt", "README.md", "docs/telegram.md", "VERSION",
     *{"runtime/" + name + ".py" for name in (
-        "operator_policy", "telegram_bridge", "alfred_appserver", "alfred_audio", "alfred_projects", "alfred_local", "alfred_maintenance",
+        "operator_policy", "telegram_bridge", "telegram_format", "alfred_appserver", "alfred_audio", "alfred_projects", "alfred_local", "alfred_maintenance",
         "alfred_report", "alfred_outcomes", "alfred_entry", "alfred_tasks", "alfred_board", "history_safety")},
 }
 
