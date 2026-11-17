@@ -368,7 +368,12 @@ class Inbox:
         return self.db.execute("""SELECT COALESCE(SUM(CASE
             WHEN EXISTS(SELECT 1 FROM outbox_parts p WHERE p.outbox_id=o.id)
             THEN (SELECT COUNT(*) FROM outbox_parts p WHERE p.outbox_id=o.id AND p.status!='sent')
-            ELSE 1 END),0) FROM outbox o WHERE chat_id=? AND status!='sent'""", (chat,)).fetchone()[0]
+            ELSE 1 END),0) FROM outbox o WHERE chat_id=? AND status NOT IN ('sent','suppressed')""", (chat,)).fetchone()[0]
+
+    def suppress(self, key, chat, text):
+        """Save a complete answer the coordinator chose not to send. Flush never claims it."""
+        return self.db.execute("INSERT OR IGNORE INTO outbox(id,chat_id,body,status,created) VALUES (?,?,?,'suppressed',?)",
+                               (key, chat, PREFIX + text, time.time())).rowcount
 
     def reply(self, key, chat, text):
         parts = reply_parts(key, PREFIX + text)
@@ -379,7 +384,7 @@ class Inbox:
             parts = [wire_body(item) for item in plan]
         outstanding = self.outstanding_parts(chat)
         # Backpressure counts pending replies, not the length of one answer.
-        pending_replies = self.db.execute("SELECT COUNT(*) FROM outbox WHERE chat_id=? AND status!='sent'", (chat,)).fetchone()[0]
+        pending_replies = self.db.execute("SELECT COUNT(*) FROM outbox WHERE chat_id=? AND status NOT IN ('sent','suppressed')", (chat,)).fetchone()[0]
         if pending_replies >= 250:
             if key.startswith(("result:", "welcome:", "ack:")):
                 raise ReplyQueueFull("Reply queue is full; keep the request uncompleted until delivery is repaired")
@@ -563,7 +568,7 @@ class Inbox:
             if recent >= 30 or waiting >= 50:
                 self.reply(key, cid, "Your earlier feedback is saved. Please wait for it to be handled before sending more.")
                 return
-            pending_replies = self.db.execute("SELECT COUNT(*) FROM outbox WHERE chat_id=? AND status!='sent'", (cid,)).fetchone()[0]
+            pending_replies = self.db.execute("SELECT COUNT(*) FROM outbox WHERE chat_id=? AND status NOT IN ('sent','suppressed')", (cid,)).fetchone()[0]
             if pending_replies >= 250:
                 raise ReplyQueueFull("Reply queue is full; keep the request uncompleted until delivery is repaired")
             parent = message.get("reply_to_message") or {}
@@ -854,7 +859,7 @@ def serve(inbox):
                     inbox.set_meta("health", "online")
                     cutoff = time.time() - 30 * 86400
                     inbox.expire_completed(cutoff)
-                    inbox.db.execute("DELETE FROM outbox WHERE status='sent' AND created<?", (cutoff,))
+                    inbox.db.execute("DELETE FROM outbox WHERE status IN ('sent','suppressed') AND created<?", (cutoff,))
                     inbox.db.execute("DELETE FROM outbox_parts WHERE NOT EXISTS (SELECT 1 FROM outbox o WHERE o.id=outbox_id)")
                     inbox.db.execute("DELETE FROM invites WHERE expires<?", (time.time(),))
             except BridgeError as error:

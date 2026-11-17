@@ -1,4 +1,4 @@
-"""Hold equivalent owner inputs and close receipts only after Telegram delivery.
+"""Hold equivalent owner inputs and close receipts only after Telegram delivery or explicit quiet completion.
 
 This reconciles transport records. It never sends a message, repeats project
 work, or treats an answered blocker as a completed project.
@@ -63,7 +63,7 @@ def delivered_duplicates(db, *, resolved_request_id=None):
         return []
     return db.execute("""
         SELECT DISTINCT child.id AS request_id, parent.id AS parent_id,
-               delivered.id AS delivered_request_id, receipt.telegram_id
+               delivered.id AS delivered_request_id, COALESCE(receipt.telegram_id,0) AS telegram_id
         FROM appserver_project_routes p
         JOIN request_context c ON c.event_id='project-outcome:' || p.route_id
           AND c.source='project_outcome' AND c.actor=p.owner_id
@@ -82,8 +82,8 @@ def delivered_duplicates(db, *, resolved_request_id=None):
           AND delivered.user_id=child.user_id AND delivered.chat_id=child.chat_id
           AND delivered.label=child.label
         JOIN outbox receipt ON receipt.id='result:' || delivered.id
-          AND receipt.chat_id=child.chat_id AND receipt.status='sent'
-          AND receipt.telegram_id IS NOT NULL
+          AND receipt.chat_id=child.chat_id AND ((receipt.status='sent'
+          AND receipt.telegram_id IS NOT NULL) OR receipt.status='suppressed')
         WHERE p.state IN ('completed','blocked') AND p.turn_id IS NOT NULL
           AND p.turn_id!='' AND p.outcome IS NOT NULL AND p.outcome!=''
           AND (child.status IN ('pending','processing') OR (child.id=? AND child.status='done'))
@@ -133,7 +133,7 @@ def delivered_owner_reply_ids(db, request_id):
     if len(replies) != 1:
         return []
     key, chat_id = replies.pop()
-    if db.execute("SELECT 1 FROM outbox WHERE id=? AND chat_id=? AND status='sent' AND telegram_id>0",
+    if db.execute("SELECT 1 FROM outbox WHERE id=? AND chat_id=? AND ((status='sent' AND telegram_id>0) OR status='suppressed')",
                   (key, chat_id)).fetchone():
         return [key]
     return []

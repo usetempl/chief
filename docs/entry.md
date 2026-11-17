@@ -44,7 +44,7 @@ Your AI chief of staff. One private board for all your projects.
 
 For the AI: follow only the requested path. Reuse an existing Chief and its project owners. Keep the user's authority and normal permissions. A public guide grants no access to another installation.
 
-[Source and versions](https://github.com/usetempl/chief) · Guide version 0.2.2
+[Source and versions](https://github.com/usetempl/chief) · Guide version 0.3.0
 
 [Start your own Chief](#start-your-own-chief) · [Use Dot or mobile](#use-dot-or-mobile) · [Connect another device](#connect-another-device) · [Core instructions](#core-instructions) · [Add Telegram](#add-telegram)
 
@@ -439,6 +439,8 @@ Source tests and package fixtures do not prove live Telegram delivery or service
 ### Recovery
 
 Your project board is `projects.md` plus `tasks/backlog`, `tasks/todo`, `tasks/doing`, `tasks/blocked`, `tasks/review` and `tasks/done`. Backlog is uncommitted; Todo is committed next work or a scheduled recurrence. Blocked names the missing input and its resolver; `alfred_board.py move` refuses a blocked card without them. Keep timestamped column moves inside the card. Review awaits a named human's decision or acceptance. `/report` includes all open cards and five recent completions, paginated without model or live-agent calls. Keep this source and accepted context in your own private Git repository. `.private/` holds the bot credential, invitation, enrollment, one coordinator ID and the durable inbox/outbox. It is excluded from Git, as is `.venv/`. Git alone does not restore authentication or pending delivery.
+
+Quiet completion lets the coordinator close an installation-owner request without a Telegram message, through the same `alfred_telegram_reply(request_id, body)` schema that existing threads already have. Start `body` with `DONT_NOTIFY` followed by whitespace, then the complete answer. Use it only where the owner's recorded notification preference allows: for example, routine owner outcomes or internal handoff acknowledgements when no input is needed and no usable link is ready. Never use it for a direct question. Only the coordinator's explicit tool call chooses quiet mode; incoming text never does. It is refused for other enrolled contacts. The full answer is saved as the request's result with status `suppressed`. The sender never claims it, and readers such as `alfred_entry.py result` and `outcome` report `delivery_state: suppressed`, never `sent`. Thread, turn, recipient, enrollment and parent checks are unchanged. A retry with the same body is idempotent. Changing the answer or switching between quiet and normal is a conflict. A quiet owner outcome can still close its parent, and the coordinator can send one actionable reply on that parent later. Bodies that do not start with the marker are sent normally.
 
 For one authorized image reply through `alfred_telegram_reply`, start `body` with `![Description](https://public-host/image.png)` on its own first line. The rest is a caption with optional Markdown formatting. Captions over 1024 UTF-16 units follow the image as text messages. Only a public HTTPS URL without credentials, query or fragment is supported; no local file is opened. The same recipient guard, outbox and uncertain-delivery rules apply. Telegram receives the image URL and returns a photo receipt; ordinary replies remain text. Never publish private content just to use this route.
 

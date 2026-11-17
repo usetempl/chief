@@ -16,6 +16,10 @@ from operator_policy import OWNER_LABEL
 from telegram_bridge import BridgeError, ROOT
 
 
+DELIVERY = {"pending": "queued", "sending": "sending", "uncertain": "uncertain", "failed": "failed",
+            "suppressed": "suppressed"}  # Explicit quiet completion: saved, never sent.
+
+
 class SafeParser(argparse.ArgumentParser):
     def error(self, message):
         # argparse normally echoes arbitrary arguments, which can contain secrets.
@@ -86,8 +90,7 @@ def result(request_id, root=ROOT):
                 output["answer_source_request_id"] = replies[0].removeprefix("result:")
         if answer:
             state = answer["status"]
-            output["delivery_state"] = {"pending": "queued", "sending": "sending",
-                                        "uncertain": "uncertain", "failed": "failed"}.get(state, "unknown")
+            output["delivery_state"] = DELIVERY.get(state, "unknown")
             if state == "sent" and type(answer["telegram_id"]) is int and answer["telegram_id"] > 0:
                 output["delivery_state"] = "sent"
             # Redact the complete body; never lose a result by clipping its tail.
@@ -99,9 +102,6 @@ def result(request_id, root=ROOT):
             else:
                 output["answer_state"] = "withheld_invalid_body"
         return output
-
-
-DELIVERY = {"pending": "queued", "sending": "sending", "uncertain": "uncertain", "failed": "failed"}
 
 
 def outcome_receipt(request_id, owner_id, root=ROOT):

@@ -51,6 +51,9 @@ TELEGRAM_REPLY_TOOL = {
                     "properties": {"request_id": {"type": "string"}, "body": {"type": "string"}},
                     "required": ["request_id", "body"]},
 }
+# Explicit coordinator choice inside the frozen request_id/body schema. Never inferred from incoming text.
+QUIET = re.compile(r"DONT_NOTIFY(?:\s+|$)")
+
 MAINTENANCE_NOTICE_TOOL = {
     "type": "function", "name": MAINTENANCE_NOTICE_NAME,
     "description": "Queue one advance downtime notice for an active maintenance observation without completing it. "
@@ -347,7 +350,7 @@ class Adapter:
         """, (row["user_id"], row["chat_id"], row["label"], row["id"])).fetchall()
         replies = []
         for child in children:
-            receipt = self.db.execute("SELECT body FROM outbox WHERE id=? AND chat_id=? AND status='sent'", (
+            receipt = self.db.execute("SELECT body FROM outbox WHERE id=? AND chat_id=? AND status IN ('sent','suppressed')", (
                 "result:" + child["id"], row["chat_id"])).fetchone()
             if receipt:
                 replies.append(receipt["body"])
@@ -368,6 +371,11 @@ class Adapter:
             self.fault_turn(params.get("threadId"), params.get("turnId"), "unsupported_tool")
             return self.tool_result(False, "Unsupported or unscoped tool call")
         body = args["body"]
+        quiet = QUIET.match(body)
+        if quiet:
+            body = body[quiet.end():]
+            if not body.strip():
+                return self.tool_result(False, "A quiet completion needs the complete answer after DONT_NOTIFY; request remains open")
         try:
             reply_parts("result:" + args["request_id"], PREFIX + body)
         except BridgeError as error:
@@ -395,11 +403,16 @@ class Adapter:
             if (not row or row["state"] not in {"accepted", "reconciled"}
                     or row["turn_id"] != params["turnId"]):
                 return self.tool_result(False, "Request is not authorized for this thread and turn")
-            saved = self.db.execute("SELECT body,chat_id FROM outbox WHERE id=?", ("result:" + row["id"],)).fetchone()
+            if quiet and row["label"] != OWNER_LABEL:
+                return self.tool_result(False, "Quiet completion is only for the installation owner; send a normal reply")
+            saved = self.db.execute("SELECT body,chat_id,status FROM outbox WHERE id=?", ("result:" + row["id"],)).fetchone()
+            matches = bool(saved and saved["body"] == PREFIX + body and saved["chat_id"] == row["chat_id"]
+                           and (saved["status"] == "suppressed") == bool(quiet))
             resolution = confirmed_outcome_resolution(self.db, row["id"]) if row["status"] == "done" and not saved else None
             if resolution:
                 result = self.tool_result(True, "Already delivered through matched request " + resolution["delivered_request_id"]
-                                          + " (Telegram receipt " + str(resolution["telegram_id"]) + "). No duplicate was queued.")
+                                          + (" (Telegram receipt " + str(resolution["telegram_id"]) + ")" if resolution["telegram_id"]
+                                             else " (completed quietly; not sent)") + ". No duplicate was queued.")
                 self.db.execute("INSERT INTO appserver_tool_calls VALUES (?,?,?,?,?)", (
                     params["callId"], self.thread_id, params["turnId"], digest, json.dumps(result)))
                 return result
@@ -411,16 +424,19 @@ class Adapter:
                     params["callId"], self.thread_id, params["turnId"], digest, json.dumps(result)))
                 return result
             if row["status"] == "done" and not aggregate:
-                if not saved or saved["body"] != PREFIX + body or saved["chat_id"] != row["chat_id"]:
+                if not matches:
                     return self.tool_result(False, "Request was already completed with another reply")
             elif row["status"] in {"pending", "processing"} or aggregate:
-                if row["id"] in duplicate_outcome_waits(self.db, replies_only=True):
+                if not quiet and row["id"] in duplicate_outcome_waits(self.db, replies_only=True):
                     return self.tool_result(False, "An equivalent owner outcome already has a saved reply. "
                                             "This receipt stays open until confirmed delivery. No duplicate was queued.")
-                if saved and (saved["body"] != PREFIX + body or saved["chat_id"] != row["chat_id"]):
+                if saved and not matches:
                     return self.tool_result(False, "A conflicting reply already exists; request remains open")
                 try:
-                    self.inbox.reply("result:" + row["id"], row["chat_id"], body)
+                    if quiet:
+                        self.inbox.suppress("result:" + row["id"], row["chat_id"], body)
+                    else:
+                        self.inbox.reply("result:" + row["id"], row["chat_id"], body)
                 except BridgeError:
                     return self.tool_result(False, "Reply queue is full; request remains open")
                 self.db.execute("UPDATE requests SET status='done' WHERE id=?", (row["id"],))
@@ -436,10 +452,11 @@ class Adapter:
                          context["parent_request_id"], context["actor"]))
             else:
                 return self.tool_result(False, "Request is not open")
-            result = self.tool_result(True, "Reply queued for the enrolled sender. Telegram delivery is not yet verified.")
+            result = self.tool_result(True, "Completed quietly. The full answer is saved; Telegram was not notified." if quiet
+                                      else "Reply queued for the enrolled sender. Telegram delivery is not yet verified.")
             self.db.execute("INSERT INTO appserver_tool_calls VALUES (?,?,?,?,?)", (
                 params["callId"], self.thread_id, params["turnId"], digest, json.dumps(result)))
-        if self.outbox_signal:
+        if self.outbox_signal and not quiet:
             self.outbox_signal()
         return result
 
@@ -564,7 +581,11 @@ class Adapter:
                              "If speech is missing, unreadable or unclear, ask for text. Never guess its contents. ")
         if any(file["kind"] in {"photo", "image"} for file in files):
             instructions += "Inspect native images before acting. "
-        instructions += "Reply only through alfred_telegram_reply with this exact request_id; final assistant text is not delivered.\n"
+        instructions += "Reply only through alfred_telegram_reply with this exact request_id; final assistant text is not delivered. "
+        if row["label"] == OWNER_LABEL:
+            instructions += ("Where the owner's recorded notification preference allows, complete without a Telegram message by starting body "
+                             "with DONT_NOTIFY and a newline, then the complete saved answer. Never hide a direct question this way. ")
+        instructions += "\n"
         return instructions + json.dumps(envelope, ensure_ascii=False)
 
     def request_input(self, row, client_id):
@@ -673,7 +694,7 @@ class Adapter:
                 WHERE parent.status IN ('pending','processing') AND EXISTS (
                   SELECT 1 FROM request_context c
                   JOIN requests child ON child.id=c.request_id
-                  JOIN outbox o ON o.id='result:' || child.id AND o.status='sent'
+                  JOIN outbox o ON o.id='result:' || child.id AND o.status IN ('sent','suppressed')
                   JOIN appserver_project_routes p ON p.request_id=parent.id AND p.owner_id=c.actor
                     AND p.state IN ('completed','blocked')
                   WHERE c.source='project_outcome' AND c.parent_request_id=parent.id

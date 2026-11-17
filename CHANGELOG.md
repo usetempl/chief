@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 — 2026-11-17
+
+- Add explicit quiet completion through the existing `alfred_telegram_reply(request_id, body)` schema. A body that starts with `DONT_NOTIFY` and whitespace saves the complete answer as the request's result with status `suppressed`. Telegram receives nothing. It is available only for installation-owner requests and owner evidence addressed to that owner, and only by the coordinator's explicit choice.
+- Local readers report `delivery_state: suppressed`. Queue limits and 30-day cleanup treat suppressed results like completed ones. Quiet owner outcomes close their parent and resolve equivalent duplicates without a send.
+- Ordinary replies are unchanged.
+
+Migration: restart the one collector at a safe boundary before relying on quiet completion. An older running collector would send the marker text as an ordinary message. Existing coordinators need no new tool.
+
 ## 0.2.2 — 2026-11-17
 
 - Add `alfred_local.py handoff` so an owner can publish a completed shared-resource answer (release, confirm or refuse) immediately as its route's only result, while it continues unrelated work. The command binds to the route, owner, parent and still-enrolled recipient. It is idempotent, and the later terminal turn is not relayed again. Route briefs include the exact command.

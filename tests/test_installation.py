@@ -226,6 +226,25 @@ try:
  raise AssertionError('unregistered reader accepted')
 except BridgeError:
  pass
+inbox.ingest(update(4,'Only notify me when input is needed'))
+async def quiet():
+ adapter = Adapter(inbox, {'thread_id':thread,'socket_path':str(ROOT/'fake.sock')})
+ async def rpc(method, params):
+  if method == 'thread/turns/list': return {'data':[]}
+  return {'turn':{'id':'turn-4'}}
+ adapter.rpc = AsyncMock(side_effect=rpc)
+ await adapter.dispatch_pending()
+ call = {'threadId':thread,'turnId':'turn-4','callId':'quiet-1','tool':'alfred_telegram_reply',
+         'arguments':{'request_id':'tg:77:4','body':'DONT_NOTIFY\nPreference saved'}}
+ assert adapter.tool_reply(call)['success'] and adapter.tool_reply(call)['success']
+ await adapter.router.close()
+asyncio.run(quiet())
+assert tuple(inbox.db.execute("SELECT status,body FROM outbox WHERE id='result:tg:77:4'").fetchone()) == ('suppressed', 'Preference saved')
+from unittest.mock import Mock
+api = Mock()
+inbox.flush(api)
+assert 'Preference saved' not in repr(api.mock_calls), api.mock_calls
+assert inbox.db.execute("SELECT status FROM outbox WHERE id='result:tg:77:4'").fetchone()[0] == 'suppressed'
 print('specialist and blocked passed')
 '''
         result = subprocess.run([sys.executable, '-c', probe], cwd=self.workspace, capture_output=True, text=True)
