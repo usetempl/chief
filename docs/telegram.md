@@ -8,6 +8,8 @@ Use `--nickname "Your name"` during preparation to give this Chief its own name.
 
 The enrolled owner's command menu contains `/report` (open tasks grouped by project lead), `/done` (completed tasks, 20 per page) and `/setup` (one guide for host setup, Dot/mobile and additional devices). All three commands run without a model. Menus are scoped to enrolled private chats; public guides grant no access.
 
+Messages from the enrolled installation owner are never rejected by an intake count. Busy hours, unfinished requests, internal agent outcomes and a full reply queue do not drop the owner's feedback; it is saved and waits for the coordinator. If an attachment fails and its acknowledgement cannot be queued, the owner's saved text is kept. Other enrolled contacts keep the 30-per-hour and 50-unfinished limits. Unknown senders, secret filtering, attachment validation and outgoing reply authorization are unchanged.
+
 After an accepted name change in `.private/profile.json`, run `python setup.py bot-profile --workspace /path/to/your/workspace` from the installation environment to apply and verify it. Do not print or send the bot credential. Verify the menu and name in your own Telegram during onboarding.
 
 This optional adapter contains code and blank onboarding only. It contains no other installation's projects, conversations, accounts, credentials or queues. Do not clone somebody else's private coordination repository.

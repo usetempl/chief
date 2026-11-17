@@ -149,6 +149,12 @@ async def verify():
  completed=inbox.db.execute("SELECT body FROM outbox WHERE id='result:done:tg:77:6'").fetchone()
  assert completed and completed[0].startswith('DONE — page 1 of 1')
  assert inbox.db.execute("SELECT count(*) FROM requests WHERE message_id IN (5,6)").fetchone()[0] == 0
+ with inbox.db:
+  inbox.db.executemany("INSERT INTO requests(id,update_id,user_id,chat_id,message_id,label,body,received) VALUES (?,?,77,77,?,?,'Earlier owner or agent traffic',?)",
+                       [('busy:'+str(i), 10000+i, 10000+i, OWNER_LABEL, time.time()) for i in range(60)])
+ inbox.ingest(update(7,77,'Playtest feedback after a busy hour'))
+ assert inbox.db.execute("SELECT body FROM requests WHERE id='tg:77:7'").fetchone()[0] == 'Playtest feedback after a busy hour'
+ assert inbox.db.execute("SELECT count(*) FROM outbox WHERE body LIKE '%Please wait%'").fetchone()[0] == 0
  for styled in (False, True):
   label='**Example**' if styled else 'Example'
   body='BACKLOG (0)\n'+label+'\n'+'Saved task.\n'*600

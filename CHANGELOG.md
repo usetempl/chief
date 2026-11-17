@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2 — 2026-11-17
+
+- Never reject the enrolled installation owner's Telegram messages by an intake count. The 30-per-hour and 50-unfinished gates, which also counted internal agent outcomes, and the 250-queued-reply gate no longer apply to the owner. A failed attachment acknowledgement cannot roll back the owner's saved text.
+- Other enrolled contacts keep their limits. Unknown senders, secret filtering, attachment validation and outgoing reply authorization are unchanged.
+
+Migration: restart the one collector at a safe boundary. Messages rejected earlier were never saved and cannot be recovered by this update; ask the sender to resend.
+
 ## 0.4.1 — 2026-11-17
 
 - Keep BACKLOG first even when `/report` spans several Telegram messages. Preserve formatting offsets, complete parts and delivery receipts. Other replies retain their part counters.

@@ -593,11 +593,11 @@ class Inbox:
                 return
             recent = self.db.execute("SELECT COUNT(*) FROM requests WHERE user_id=? AND received>?", (uid, time.time() - 3600)).fetchone()[0]
             waiting = self.db.execute("SELECT COUNT(*) FROM requests WHERE user_id=? AND status NOT IN ('done','denied')", (uid,)).fetchone()[0]
-            if recent >= 30 or waiting >= 50:
+            if user["label"] != OWNER_LABEL and (recent >= 30 or waiting >= 50):
                 self.reply(key, cid, "Your earlier feedback is saved. Please wait for it to be handled before sending more.")
                 return
             pending_replies = self.db.execute("SELECT COUNT(*) FROM outbox WHERE chat_id=? AND status NOT IN ('sent','suppressed')", (cid,)).fetchone()[0]
-            if pending_replies >= 250:
+            if pending_replies >= 250 and user["label"] != OWNER_LABEL:
                 raise ReplyQueueFull("Reply queue is full; keep the request uncompleted until delivery is repaired")
             parent = message.get("reply_to_message") or {}
             parent_id = parent.get("message_id") if isinstance(parent, dict) else None
@@ -607,7 +607,11 @@ class Inbox:
                             (key, update_id, uid, cid, message.get("message_id"), user["label"], sanitized, time.time(), parent_id))
             if has_attachment and not self._attachment(key, message, api):
                 failure = self.db.execute("SELECT error FROM attachments WHERE request_id=?", (key,)).fetchone()[0]
-                self.reply("ack:" + key, cid, "Your message is saved, but the attachment was not received. " + failure)
+                try:
+                    self.reply("ack:" + key, cid, "Your message is saved, but the attachment was not received. " + failure)
+                except ReplyQueueFull:
+                    if user["label"] != OWNER_LABEL:
+                        raise
 
     def flush(self, api):
         # Parent status is aggregate: every part needs its own exact receipt.

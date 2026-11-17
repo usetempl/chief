@@ -45,7 +45,7 @@ Your AI chief of staff. One private board for all your projects.
 
 For the AI: follow only the requested path. Reuse an existing Chief and its project owners. Keep the user's authority and normal permissions. A public guide grants no access to another installation.
 
-[Source and versions](https://github.com/usetempl/chief) · Guide version 0.4.1
+[Source and versions](https://github.com/usetempl/chief) · Guide version 0.4.2
 
 [Start your own Chief](#start-your-own-chief) · [Use Dot or mobile](#use-dot-or-mobile) · [Connect another device](#connect-another-device) · [Core instructions](#core-instructions) · [Add Telegram](#add-telegram)
 
@@ -210,6 +210,8 @@ Replies support Markdown bold, italic, strikethrough, named links, headings and 
 Use `--nickname "Your name"` during preparation to give this Chief its own name. The collector applies that name to Telegram and verifies it through the Bot API. Skipping naming keeps Chief. Existing bot usernames, ownership and service identifiers remain stable.
 
 The enrolled owner's command menu contains `/report` (open tasks grouped by project lead), `/done` (completed tasks, 20 per page) and `/setup` (one guide for host setup, Dot/mobile and additional devices). All three commands run without a model. Menus are scoped to enrolled private chats; public guides grant no access.
+
+Messages from the enrolled installation owner are never rejected by an intake count. Busy hours, unfinished requests, internal agent outcomes and a full reply queue do not drop the owner's feedback; it is saved and waits for the coordinator. If an attachment fails and its acknowledgement cannot be queued, the owner's saved text is kept. Other enrolled contacts keep the 30-per-hour and 50-unfinished limits. Unknown senders, secret filtering, attachment validation and outgoing reply authorization are unchanged.
 
 After an accepted name change in `.private/profile.json`, run `python setup.py bot-profile --workspace /path/to/your/workspace` from the installation environment to apply and verify it. Do not print or send the bot credential. Verify the menu and name in your own Telegram during onboarding.
 
