@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3 — 2026-11-17
+
+- Render Markdown as Telegram bold, italic, strikethrough, named links and code.
+- Preserve Unicode offsets and styles across numbered message parts and photo captions.
+- Save the exact delivery plan before sending and verify text plus formatting in Telegram receipts.
+- Keep existing queued replies, private settings and delivery history unchanged.
+
+The optional Telegram adapter adds markdown-it-py for CommonMark parsing. No model calls or new services.
+
 ## 0.1.2 — 2026-11-16
 
 - Follow the GitHub organization rename to `usetempl/chief`.
