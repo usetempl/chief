@@ -144,6 +144,11 @@ async def verify():
  report=inbox.db.execute("SELECT body FROM outbox WHERE id='result:report:tg:77:5'").fetchone()
  assert report and 'No live checks or model calls' in report[0]
  assert 'TODO (0)' in report[0] and 'DOING (0)' in report[0] and 'REVIEW (0)' in report[0]
+ assert report[0].startswith('BACKLOG (0)') and 'DONE' not in report[0]
+ inbox.ingest(update(6,77,'/done'))
+ completed=inbox.db.execute("SELECT body FROM outbox WHERE id='result:done:tg:77:6'").fetchone()
+ assert completed and completed[0].startswith('DONE — page 1 of 1')
+ assert inbox.db.execute("SELECT count(*) FROM requests WHERE message_id IN (5,6)").fetchone()[0] == 0
  inbox.db.close()
  restarted=Inbox(ROOT)
  new=Adapter(restarted,config)

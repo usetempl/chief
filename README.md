@@ -42,9 +42,10 @@ Coordinate your existing AI leads across projects and track their work on one pr
 
    ```text
    /report
+   /done
    ```
 
-   Get the saved board and recent completions without a model call or AI token use.
+   `/report` lists every open card, grouped by project lead. `/done` lists completions, 20 per page (`/done 2` for the next page). Neither makes a model call or uses AI tokens.
 
 ## ⚙️ How it works
 
@@ -57,7 +58,7 @@ The core uses Markdown instructions and records. Your Codex model decides where 
 | **Board** | `tasks/<column>/*.md` holds each task. **Backlog** holds ideas, **Todo** committed work, **Doing** active work, **Blocked** work missing a named input, **Review** human decisions, and **Done** verified outcomes. Moves retain timestamps. |
 | **Memory** | Codex handles context and compaction. Markdown keeps durable facts. Project owners keep detailed evidence. Private Git backups are optional. Chief reads relevant records. |
 | **Telegram · optional** | Python 3.12+, its standard library and pinned `websockets` connect to Codex's app-server. Enrollment controls access. SQLite holds requests, the outbox and delivery receipts. |
-| **Reports & replies** | `/report` reads saved cards without model calls. `markdown-it-py` parses reply formatting into Telegram entities. Numbered parts retain their styles and delivery receipts. |
+| **Reports & replies** | `/report` and `/done` read saved cards without model calls. `markdown-it-py` parses reply formatting into Telegram entities. Numbered parts retain their styles and delivery receipts. |
 
 ![Chief by Templ: request flow, project leads, board and memory](docs/architecture.png)
 

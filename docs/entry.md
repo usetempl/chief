@@ -38,13 +38,14 @@ Your AI chief of staff. One private board for all your projects.
 
    ```text
    /report
+   /done
    ```
 
-   Get the saved board and recent completions without a model call or AI token use.
+   `/report` lists every open card, grouped by project lead. `/done` lists completions, 20 per page (`/done 2` for the next page). Neither makes a model call or uses AI tokens.
 
 For the AI: follow only the requested path. Reuse an existing Chief and its project owners. Keep the user's authority and normal permissions. A public guide grants no access to another installation.
 
-[Source and versions](https://github.com/usetempl/chief) · Guide version 0.3.0
+[Source and versions](https://github.com/usetempl/chief) · Guide version 0.4.0
 
 [Start your own Chief](#start-your-own-chief) · [Use Dot or mobile](#use-dot-or-mobile) · [Connect another device](#connect-another-device) · [Core instructions](#core-instructions) · [Add Telegram](#add-telegram)
 
@@ -190,7 +191,7 @@ For an explicitly authorized recurring task, record the cadence, timezone, next 
 
 Update records when scope, assignment, outcome or a real blocker changes. Saved status is dated evidence, not a fresh live check. Keep implementation details with the project.
 
-When asked for a report, show all saved `backlog`, `todo`, `doing`, `blocked` and human `review` items, their next runs and five recent completions. Include completed recurring runs even after their cards return to `todo`. Keep reports concise and use pages when needed. The core does not install a `/report` bot command.
+When asked for a report, show all saved `backlog`, `todo`, `doing`, `blocked` and human `review` items with their next runs. Group the non-backlog columns by a readable project-lead label (optional `Report lead:` field). When asked for completions, list saved done items newest first in pages of 20, including completed recurring runs even after their cards return to `todo`. Keep reports concise and use pages when needed. The core does not install a `/report` bot command.
 
 Use private storage for operational records, outside the public clone. Keep credentials and account sessions out of task files and Git. Never publish private state or histories during setup.
 
@@ -204,7 +205,7 @@ Replies support Markdown bold, italic, strikethrough, named links, headings and 
 
 Use `--nickname "Your name"` during preparation to give this Chief its own name. The collector applies that name to Telegram and verifies it through the Bot API. Skipping naming keeps Chief. Existing bot usernames, ownership and service identifiers remain stable.
 
-The enrolled owner's command menu contains `/report` (saved board and recent completions) and `/setup` (one guide for host setup, Dot/mobile and additional devices). Both commands run without a model. Menus are scoped to enrolled private chats; public guides grant no access.
+The enrolled owner's command menu contains `/report` (open tasks grouped by project lead), `/done` (completed tasks, 20 per page) and `/setup` (one guide for host setup, Dot/mobile and additional devices). All three commands run without a model. Menus are scoped to enrolled private chats; public guides grant no access.
 
 After an accepted name change in `.private/profile.json`, run `python setup.py bot-profile --workspace /path/to/your/workspace` from the installation environment to apply and verify it. Do not print or send the bot credential. Verify the menu and name in your own Telegram during onboarding.
 
@@ -438,7 +439,7 @@ Source tests and package fixtures do not prove live Telegram delivery or service
 
 ### Recovery
 
-Your project board is `projects.md` plus `tasks/backlog`, `tasks/todo`, `tasks/doing`, `tasks/blocked`, `tasks/review` and `tasks/done`. Backlog is uncommitted; Todo is committed next work or a scheduled recurrence. Blocked names the missing input and its resolver; `alfred_board.py move` refuses a blocked card without them. Keep timestamped column moves inside the card. Review awaits a named human's decision or acceptance. `/report` includes all open cards and five recent completions, paginated without model or live-agent calls. Keep this source and accepted context in your own private Git repository. `.private/` holds the bot credential, invitation, enrollment, one coordinator ID and the durable inbox/outbox. It is excluded from Git, as is `.venv/`. Git alone does not restore authentication or pending delivery.
+Your project board is `projects.md` plus `tasks/backlog`, `tasks/todo`, `tasks/doing`, `tasks/blocked`, `tasks/review` and `tasks/done`. Backlog is uncommitted; Todo is committed next work or a scheduled recurrence. Blocked names the missing input and its resolver; `alfred_board.py move` refuses a blocked card without them. Keep timestamped column moves inside the card. Review awaits a named human's decision or acceptance. `/report` starts at BACKLOG and includes every open card. Todo, Doing, Blocked and Review are grouped under a readable lead label: the card's optional `Report lead:` field, or a short name derived from `Project:` or the card name. Owner identities are never shown. Task numbers run across the whole report. `/done` shows saved completions, including completed recurring runs, newest first and 20 per page. `/done 2` and later pages are linked in the footer, and an unavailable page is answered locally. Both commands are owner-only, paginated, and make no model or live-agent calls. Keep this source and accepted context in your own private Git repository. `.private/` holds the bot credential, invitation, enrollment, one coordinator ID and the durable inbox/outbox. It is excluded from Git, as is `.venv/`. Git alone does not restore authentication or pending delivery.
 
 Quiet completion lets the coordinator close an installation-owner request without a Telegram message, through the same `alfred_telegram_reply(request_id, body)` schema that existing threads already have. Start `body` with `DONT_NOTIFY` followed by whitespace, then the complete answer. Use it only where the owner's recorded notification preference allows: for example, routine owner outcomes or internal handoff acknowledgements when no input is needed and no usable link is ready. Never use it for a direct question. Only the coordinator's explicit tool call chooses quiet mode; incoming text never does. It is refused for other enrolled contacts. The full answer is saved as the request's result with status `suppressed`. The sender never claims it, and readers such as `alfred_entry.py result` and `outcome` report `delivery_state: suppressed`, never `sent`. Thread, turn, recipient, enrollment and parent checks are unchanged. A retry with the same body is idempotent. Changing the answer or switching between quiet and normal is a conflict. A quiet owner outcome can still close its parent, and the coordinator can send one actionable reply on that parent later. Bodies that do not start with the marker are sent normally.
 

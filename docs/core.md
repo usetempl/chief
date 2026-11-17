@@ -50,7 +50,7 @@ For an explicitly authorized recurring task, record the cadence, timezone, next 
 
 Update records when scope, assignment, outcome or a real blocker changes. Saved status is dated evidence, not a fresh live check. Keep implementation details with the project.
 
-When asked for a report, show all saved `backlog`, `todo`, `doing`, `blocked` and human `review` items, their next runs and five recent completions. Include completed recurring runs even after their cards return to `todo`. Keep reports concise and use pages when needed. The core does not install a `/report` bot command.
+When asked for a report, show all saved `backlog`, `todo`, `doing`, `blocked` and human `review` items with their next runs. Group the non-backlog columns by a readable project-lead label (optional `Report lead:` field). When asked for completions, list saved done items newest first in pages of 20, including completed recurring runs even after their cards return to `todo`. Keep reports concise and use pages when needed. The core does not install a `/report` bot command.
 
 Use private storage for operational records, outside the public clone. Keep credentials and account sessions out of task files and Git. Never publish private state or histories during setup.
 

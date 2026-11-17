@@ -556,6 +556,18 @@ class Inbox:
                 # One parent preserves order and completion across all report parts.
                 self.reply("result:report:" + key, cid, body)
                 return
+            done_page = re.fullmatch(r"/done(?:\s+(\S+))?", text.strip())
+            if done_page and user["label"] == OWNER_LABEL:
+                from alfred_report import done
+                page = int(done_page[1]) if done_page[1] and re.fullmatch(r"[1-9][0-9]{0,5}", done_page[1]) else (
+                    1 if done_page[1] is None else None)
+                try:
+                    body = done(page=page)
+                except Exception:
+                    logging.exception("Done list generation failed")
+                    body = "Done list unavailable. The saved task board is still intact."
+                self.reply("result:done:" + key, cid, body)
+                return
             if not text and not has_attachment:
                 self.reply(key, cid, "Please send text, a photo, a document, or voice/audio up to 5 minutes and 10 MiB.")
                 return
@@ -755,7 +767,8 @@ def setup_guides():
 def configure_chat_menu(api, chat_id, label):
     if label not in INVITE_FILES:
         raise BridgeError("Only enrolled contacts receive a command menu")
-    commands = ([{"command": "report", "description": "Full task board and recent completions"}]
+    commands = ([{"command": "report", "description": "Open tasks grouped by project lead"},
+                 {"command": "done", "description": "Completed tasks, 20 per page"}]
                 if label == OWNER_LABEL else [])
     commands += [{"command": "setup", "description": "Connect a device or start a separate Chief"}]
     scope = {"type": "chat", "chat_id": chat_id}

@@ -18,7 +18,7 @@ The image includes the optional adapter path. The plain-file core needs no Pytho
 | Record | Chief receives a completed outcome or necessary missing input, then updates the card and links project evidence. | Chief context, local file I/O, route receipts in SQLite and batched private Git checkpoints. |
 | Deliver | The exact-request reply enters the outbox; the collector sends its complete parts and records receipts. | Local Python/SQLite and Telegram API calls; no model needed to transmit saved text. |
 
-The owner's `/report` takes a shorter path: read the saved board and recent completions, render text, then use the same outbox. It makes no model or live-project calls. Idle transport polling also makes no model calls. Only explicitly authorized due tasks can create scheduled work.
+The owner's `/report` and `/done` take a shorter path: read the saved cards, render text, then use the same outbox. It makes no model or live-project calls. Idle transport polling also makes no model calls. Only explicitly authorized due tasks can create scheduled work.
 
 The model's working context includes supplied instructions, conversation or compaction summaries, and tool results. Codex manages its context window. Chief resumes or steers the same thread; it does not start an empty context for each message. A short new brief can therefore enter a large existing context. Selective reads reduce additional context; they do not erase previous turns.
 

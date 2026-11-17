@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 — 2026-11-17
+
+- `/report` starts at BACKLOG, with no introductory text, and lists every open card. Todo, Doing, Blocked and Review are grouped under a readable lead label: an optional `Report lead:` card field, or a short label derived from `Project:` or the card name. Owner identities are never shown. Task numbering stays global, and multipart delivery is unchanged.
+- Completions move out of `/report` to a new owner-only `/done`. It lists saved completions, including completed recurring runs, newest first and 20 per page (`/done 2`, …). The footer links to the other pages, and an unavailable page is answered locally. No model calls.
+- The owner's Telegram menu adds `/done`. Other contacts and `/setup` are unchanged.
+
+Migration: restart the one collector at a safe boundary. Its menu check then adds `/done`. Optionally add `Report lead:` to cards for clearer group names. Saved report numbers still resolve against each delivered report.
+
 ## 0.3.0 — 2026-11-17
 
 - Add explicit quiet completion through the existing `alfred_telegram_reply(request_id, body)` schema. A body that starts with `DONT_NOTIFY` and whitespace saves the complete answer as the request's result with status `suppressed`. Telegram receives nothing. It is available only for installation-owner requests and owner evidence addressed to that owner, and only by the coordinator's explicit choice.

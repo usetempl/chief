@@ -55,46 +55,94 @@ def saved_time(row, field="Updated"):
         return datetime.min
 
 
+DONE_PAGE = 20
+IDENTITY = re.compile(r"\b(?:codex|claude):\S+|\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
+GROUPED = ("todo", "doing", "blocked", "review")
+
+
+def lead(row):
+    """Display label only: `Report lead`, else a short project-derived name. Never an identity."""
+    label = compact(IDENTITY.sub("", row.get("Report lead", ""))).strip(" ;,.-")
+    if label:
+        return label
+    project = compact(IDENTITY.sub("", row.get("Project") or row["name"]))
+    project = re.split(r"\s*[;(]|\s+/\s+|\s+—\s+", project)[0].strip(" ,.-") or "Unassigned"
+    return (project[:40].rstrip() + "…" if len(project) > 40 else project) + " lead"
+
+
+def line(row, number):
+    state = row["state"]
+    next_step = compact(row.get("Next") or row.get("Snapshot") or "Next step unavailable")
+    review = compact(row.get("Reviewer") or "Reviewer not recorded") + ": " if state == "review" else ""
+    if state == "blocked":
+        review = ("Blocked by " + compact(row.get("Blocked by") or "missing input not recorded") + "; resolver: "
+                  + compact(row.get("Resolver") or "not recorded") + ". ")
+    parked = " [parked]" if row.get("Project mode") == "parked" else ""
+    recurring = " [recurring; next " + compact(row.get("Next run", "not set")) + "]" if row.get("Recurrence") else ""
+    return f"{number}. {compact(row['name'])}{parked}{recurring} — {review}{next_step}"
+
+
 def report(root=ROOT, db=None, live_claude=None):
+    """Every open card, starting at BACKLOG. Completions belong to /done."""
     rows = cards(root)
-    lines = ["Chief kanban — saved task board", "Use the task numbers from this report; the next report can renumber them.",
-             "Backlog: uncommitted ideas/research. Todo: committed next work or scheduled recurrence. "
-             "Blocked: real missing input and who can supply it. Review: a named human's decision."]
+    lines = []
     task_number = 0
     for state in STATES[:-1]:
         current = sorted((row for row in rows if row["state"] == state),
                          key=lambda row: (priority(row), row["name"].casefold(), row["path"]))
-        lines.append(f"\n{state.upper()} ({len(current)})")
-        for row in current:
-            next_step = compact(row.get("Next") or row.get("Snapshot") or "Next step unavailable")
-            review = compact(row.get("Reviewer") or "Reviewer not recorded") + ": " if state == "review" else ""
-            if state == "blocked":
-                review = ("Blocked by " + compact(row.get("Blocked by") or "missing input not recorded") + "; resolver: "
-                          + compact(row.get("Resolver") or "not recorded") + ". ")
-            parked = " [parked]" if row.get("Project mode") == "parked" else ""
-            recurring = " [recurring; next " + compact(row.get("Next run", "not set")) + "]" if row.get("Recurrence") else ""
-            task_number += 1
-            lines.append(f"{task_number}. {compact(row['name'])}{parked}{recurring} — {review}{next_step}")
+        lines.append(("\n" if lines else "") + f"{state.upper()} ({len(current)})")
+        if state in GROUPED:
+            groups = {}
+            for row in current:
+                groups.setdefault(lead(row), []).append(row)
+            ordered = sorted(groups.items(), key=lambda item: (priority(item[1][0]), item[0].casefold()))
+        else:
+            ordered = [(None, current)]
+        for label, members in ordered:
+            if label and members:
+                lines.append(label)
+            for row in members:
+                task_number += 1
+                lines.append(line(row, task_number))
         if not current:
             lines.append("• None")
-    done = sorted((row for row in rows if row["state"] == "done" or row.get("Last completed")),
-                  key=lambda row: (saved_time(row, "Last completed") if row.get("Last completed") else saved_time(row), row["path"]), reverse=True)
-    lines.append(f"\nDONE — latest {min(5, len(done))} of {len(done)}")
-    for row in done[:5]:
-        stamp = saved_time(row, "Last completed") if row.get("Last completed") else saved_time(row)
-        date = stamp.strftime("%Y-%m-%d") if stamp != datetime.min else "date unknown"
-        summary = compact(row.get("Last done") or row.get("Snapshot") or "Outcome not recorded")
-        task_number += 1
-        lines.append(f"{task_number}. {compact(row['name'])} ({date}) — {summary}")
-    if not done:
-        lines.append("• None")
     if db is not None and db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='appserver_dispatch'").fetchone():
         count = db.execute("SELECT COUNT(*) FROM appserver_dispatch d JOIN requests r ON r.id=d.request_id "
                            "WHERE (d.error LIKE 'recovery_required:%' OR d.state IN ('rejected','uncertain')) "
                            "AND r.status IN ('pending','processing')").fetchone()[0]
         issues = db.execute("SELECT COUNT(*) FROM outbox WHERE status IN ('failed','uncertain')").fetchone()[0]
         lines.append(f"\nDelivery: {issues} flagged replies; {count} requests need reconciliation. Nothing is replayed automatically.")
-    lines.append("\nAll open cards are included. No live checks or model calls.")
+    lines.append("\nAll open cards are included. Completions: /done. No live checks or model calls.")
+    return "\n".join(lines)
+
+
+def completed(rows):
+    """Saved completions, newest first, including completed recurring runs."""
+    def stamp(row):
+        return saved_time(row, "Last completed") if row.get("Last completed") else saved_time(row)
+    return sorted((row for row in rows if row["state"] == "done" or row.get("Last completed")),
+                  key=lambda row: (stamp(row), row["path"]), reverse=True), stamp
+
+
+def done(root=ROOT, page=1):
+    """One saved page of /done. Pages are 1-based; an unavailable page is answered locally."""
+    rows, stamp = completed(cards(root))
+    pages = max(1, -(-len(rows) // DONE_PAGE))
+    if not isinstance(page, int) or not 1 <= page <= pages:
+        return f"Done page unavailable. Done has {pages} page{'s' if pages != 1 else ''}. Use /done or /done 2."
+    first = (page - 1) * DONE_PAGE
+    shown = rows[first:first + DONE_PAGE]
+    lines = [f"DONE — page {page} of {pages} ({first + 1 if shown else 0}–{first + len(shown)} of {len(rows)}, newest first)"]
+    for number, row in enumerate(shown, first + 1):
+        when = stamp(row)
+        date = when.strftime("%Y-%m-%d") if when != datetime.min else "date unknown"
+        summary = compact(row.get("Last done") or row.get("Snapshot") or "Outcome not recorded")
+        lines.append(f"{number}. {compact(row['name'])} ({date}) — {summary}")
+    if not rows:
+        lines.append("• None")
+    navigation = ([f"Previous: /done {page - 1}" if page > 2 else "Previous: /done"] if page > 1 else []) + \
+                 ([f"Next: /done {page + 1}"] if page < pages else [])
+    lines.append("\n" + (" · ".join(navigation) if navigation else "No more pages.") + " Saved records only; no model calls.")
     return "\n".join(lines)
 
 
