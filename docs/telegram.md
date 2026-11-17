@@ -6,7 +6,7 @@ Replies support Markdown bold, italic, strikethrough, named links, headings and 
 
 Use `--nickname "Your name"` during preparation to give this Chief its own name. The collector applies that name to Telegram and verifies it through the Bot API. Skipping naming keeps Chief. Existing bot usernames, ownership and service identifiers remain stable.
 
-The enrolled owner's command menu contains `/report` (saved board and recent completions) and `/setup` (mobile, another computer, or another person's independent Chief). Both commands run without a model. Menus are scoped to enrolled private chats; public guides grant no access.
+The enrolled owner's command menu contains `/report` (saved board and recent completions) and `/setup` (one guide for host setup, Dot/mobile and additional devices). Both commands run without a model. Menus are scoped to enrolled private chats; public guides grant no access.
 
 After an accepted name change in `.private/profile.json`, run `python setup.py bot-profile --workspace /path/to/your/workspace` from the installation environment to apply and verify it. Do not print or send the bot credential. Verify the menu and name in your own Telegram during onboarding.
 

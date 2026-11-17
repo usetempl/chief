@@ -1,9 +1,9 @@
 {
-  "version": "0.1.4",
+  "version": "0.1.5",
   "files": {
-    "README.md": "19a6cc6126464a851a9260536a1fed0418a545f1170f0f2c252755be21e41d99",
-    "VERSION": "8a3dad16d348c163566a456fcf650d85d7aeeda5e53d01ee1fa8dc15212915a7",
-    "docs/telegram.md": "0e8792606323e65d38138cd14324c421fd8087f1585d037f51480e9efc73c0bf",
+    "README.md": "b21505503a27ee8e5ca5ef7cc990452986e74c3bc4dac0dddd003b77022939d9",
+    "VERSION": "800cf1c0392b24de7c0a1c6ea6778ecb433dec71c49a150bce96a98477527b2f",
+    "docs/telegram.md": "9d779bd6e7dc754f65dac5f594bc5faa6cdd8c84d9b8b03f76a798debdfaba6a",
     "onboard.py": "f650e773a17e51f0cd68115a1b87cff53edf2214e4d7fd5b2000e667a129f790",
     "requirements.txt": "7293d3a2e6e6144e7c64833e133f3f585c4ddb11a77df3a01e8bc18d9b10a4a8",
     "runtime/alfred_appserver.py": "6c34d37c3839e72bebca42760fceaea71cea5f3c182b617aa23252343cc37448",
@@ -18,7 +18,7 @@
     "runtime/alfred_tasks.py": "30195cf04734c8538c5dc20d7a8e2746be50254b5f28409ef078a690b665ef16",
     "runtime/history_safety.py": "9a1d41ea282d4c706803e6ef5362ce3c8e0547b7c2961f537a5d1df04f788b75",
     "runtime/operator_policy.py": "0e2a242c56c023d2f98079855eb4880c87f7b7c905a20b16927f40e093bd0d52",
-    "runtime/telegram_bridge.py": "c03438c450e637f0e58fb2763fde2e35689503db8cb8492fc139aaf24d19bb92",
+    "runtime/telegram_bridge.py": "1d3289e8b4413dba7cd75a89e77c5d9681bc86c339d07f622d78dbf2eecc7651",
     "runtime/telegram_format.py": "6bfe609743b574fccdf21891ad415a401233cc8f2ad73d770a5d42ea2a0b8024",
     "setup.py": "a66a7fe7746191d52292f4ba20da2de466eec728eacef3aa856588562797d96b",
     "snapshot.py": "fe2ce38ef6ddf1b006573499ce13912fc9e9beaf2a05aa083e856df3b5d5d049",

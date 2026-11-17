@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.5 — 2026-11-17
+
+- Use one entry page at `https://usetempl.com/chief` for host setup, Dot/mobile and additional devices.
+- Include the full setup, device, core and optional Telegram instructions in one static guide generated from the source files.
+- Point the README prompts and optional Telegram `/setup` command at that page.
+- Explain the four starting paths, including Telegram `/report` without model calls.
+
+The complete entry page was verified live before publication. Existing installations keep their private state and permissions.
+
 ## 0.1.4 — 2026-11-17
 
 - Load the optional Markdown parser only when rendering a Telegram reply. Local submission and result readers still work with the host's standard Python.
