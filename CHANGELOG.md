@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4 — 2026-11-17
+
+- Load the optional Markdown parser only when rendering a Telegram reply. Local submission and result readers still work with the host's standard Python.
+
 ## 0.1.3 — 2026-11-17
 
 - Render Markdown as Telegram bold, italic, strikethrough, named links and code.

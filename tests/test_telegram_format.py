@@ -18,6 +18,12 @@ def selected(text, entity):
 
 
 class FormattingTests(unittest.TestCase):
+    def test_helper_import_does_not_need_optional_render_dependencies(self):
+        env = dict(os.environ, PYTHONPATH=str(ROOT / "runtime"))
+        probe = "import sys; from telegram_format import delivery_plan, receipt_entities_match; assert 'markdown_it' not in sys.modules"
+        result = subprocess.run([sys.executable, "-S", "-c", probe], env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_screenshot_style_bold_and_named_link_with_emoji(self):
         text, entities = render("👋 • **Login works.** [Docs](https://example.com/a_(b))")
         self.assertEqual(text, "👋 • Login works. Docs")

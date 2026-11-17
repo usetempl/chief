@@ -1,8 +1,8 @@
 {
-  "version": "0.1.3",
+  "version": "0.1.4",
   "files": {
     "README.md": "19a6cc6126464a851a9260536a1fed0418a545f1170f0f2c252755be21e41d99",
-    "VERSION": "2d2454ef0edeb462a6ce8b25d387aaa74df08093d5cea0428a10ce55510c6326",
+    "VERSION": "8a3dad16d348c163566a456fcf650d85d7aeeda5e53d01ee1fa8dc15212915a7",
     "docs/telegram.md": "0e8792606323e65d38138cd14324c421fd8087f1585d037f51480e9efc73c0bf",
     "onboard.py": "f650e773a17e51f0cd68115a1b87cff53edf2214e4d7fd5b2000e667a129f790",
     "requirements.txt": "7293d3a2e6e6144e7c64833e133f3f585c4ddb11a77df3a01e8bc18d9b10a4a8",
@@ -19,7 +19,7 @@
     "runtime/history_safety.py": "9a1d41ea282d4c706803e6ef5362ce3c8e0547b7c2961f537a5d1df04f788b75",
     "runtime/operator_policy.py": "0e2a242c56c023d2f98079855eb4880c87f7b7c905a20b16927f40e093bd0d52",
     "runtime/telegram_bridge.py": "c03438c450e637f0e58fb2763fde2e35689503db8cb8492fc139aaf24d19bb92",
-    "runtime/telegram_format.py": "ab46eec8b34abf462a2257cdfc6721dcd164287e282c335da1adbfb1b40b65ee",
+    "runtime/telegram_format.py": "6bfe609743b574fccdf21891ad415a401233cc8f2ad73d770a5d42ea2a0b8024",
     "setup.py": "a66a7fe7746191d52292f4ba20da2de466eec728eacef3aa856588562797d96b",
     "snapshot.py": "fe2ce38ef6ddf1b006573499ce13912fc9e9beaf2a05aa083e856df3b5d5d049",
     "windows_service.py": "de9bf2afcf64f4e62759fc41fb3bf1d3b7f0fc8e6584caec871a2e70390468ec"

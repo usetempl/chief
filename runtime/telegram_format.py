@@ -1,9 +1,13 @@
 """CommonMark to Telegram text/entities; no HTML evaluation or network access."""
+from functools import lru_cache
 from urllib.parse import urlsplit
 
-from markdown_it import MarkdownIt
 
-PARSER = MarkdownIt("commonmark", {"html": False}).enable("strikethrough")
+@lru_cache(maxsize=1)
+def parser():
+    # Read-only and submission helpers do not need the optional renderer.
+    from markdown_it import MarkdownIt
+    return MarkdownIt("commonmark", {"html": False}).enable("strikethrough")
 
 
 def units(text):
@@ -72,7 +76,7 @@ def render(source):
             else:
                 append(token.content)
 
-    for token in PARSER.parse(source):
+    for token in parser().parse(source):
         kind = token.type
         if kind == "inline":
             inline(token.children or [])
