@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.1 — 2026-11-17
+
+- The bridge sets a 👍 reaction on each saved message or bridge command from the enrolled installation owner, using Telegram's `setMessageReaction`. It is a receipt, not completion, and uses no model.
+- Receipts are queued as metadata in the intake transaction, sent by the existing collector after commit, rechecked against the owner's enrollment, and deduplicated per message, including redeliveries and edits. Rate limits and network errors retry with bounded backoff for up to 8 attempts; other refusals stop. Saved input, replies and dispatch are never affected.
+- Contacts, unknown senders, rejected or credential-only messages and failed attachments get no reaction.
+- `inbox`/`status` report `owner_receipts` counts. Sent and failed receipts follow the 30-day cleanup.
+
+Migration: restart the one collector at a safe boundary. Messages saved earlier get no retroactive reaction.
+
 ## 0.5.0 — 2026-11-17
 
 - Route a follow-up after answering first. A request answered earlier in the same coordinator turn can still be routed to an existing owner; the exact turn, still-enrolled original sender, project grant and one immutable brief per owner are still required. Other turns, other or unknown requests, denied, revoked and re-enrolled senders stay refused.

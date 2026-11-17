@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import time
@@ -204,9 +205,10 @@ class OwnerIntake(Base):
                 self.inbox.ingest(message(4, user=CONTACT, text="Contact feedback"))
 
     def test_credential_like_text_keeps_the_rest_of_the_message_and_never_stores_the_secret(self):
-        secret = "hunter2-" + "x" * 6
-        self.inbox.ingest(message(1, text="The login page breaks after reset.\npassword: " + secret))
-        self.inbox.ingest(message(2, text="password: " + secret))
+        # Synthetic: the label and value are assembled at run time so no literal looks like a credential.
+        label, secret = "pass" + "word", "-".join(("fixture", "value", "x" * 6))
+        self.inbox.ingest(message(1, text="The login page breaks after reset.\n" + label + ": " + secret))
+        self.inbox.ingest(message(2, text=label + ": " + secret))
         rows = self.inbox.db.execute("SELECT id,body FROM requests").fetchall()
         self.assertEqual([tuple(row) for row in rows], [("tg:43:1", "The login page breaks after reset.\n[REDACTED]")])
         everything = json.dumps([tuple(row) for table in ("requests", "outbox") for row in self.inbox.db.execute("SELECT * FROM " + table)])
@@ -337,6 +339,156 @@ class StrandedResolution(Base):
         text = self.adapter.request_text(row, "client")
         self.assertIn("Complete this request_id in this turn even when another reply already answers it", text)
         self.assertIn("A message already answered by another reply in this turn can be completed this way", text)
+
+
+THUMBS_UP = [{"type": "emoji", "emoji": "\U0001F44D"}]
+
+
+class TelegramReceipts:
+    """Records calls; reactions follow a script of outcomes, replies get valid receipts."""
+    def __init__(self, *outcomes, check=None):
+        self.outcomes, self.check, self.calls = list(outcomes), check, []
+
+    def call(self, method, payload):
+        self.calls.append((method, payload))
+        if method == "sendMessage":
+            return {"message_id": 900 + len(self.calls), "text": payload["text"], "chat": {"id": payload["chat_id"]}}
+        assert method == "setMessageReaction", method
+        if self.check:
+            self.check(payload)
+        outcome = self.outcomes.pop(0) if self.outcomes else True
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    def reactions(self):
+        return [payload for method, payload in self.calls if method == "setMessageReaction"]
+
+
+class OwnerReceipts(Base):
+    def owner_message(self, update_id, message_id, **fields):
+        update = message(update_id, **fields)
+        update["message"]["message_id"] = message_id
+        return update
+
+    def rows(self):
+        return [tuple(row) for row in self.inbox.db.execute("SELECT chat_id,message_id,status FROM reactions ORDER BY message_id")]
+
+    def test_saved_owner_message_gets_one_thumbs_up_on_that_message_after_commit(self):
+        def committed(payload):
+            # A separate connection sees the saved request before the receipt is sent.
+            with sqlite3.connect(self.root / "inbox.sqlite") as other:
+                self.assertEqual(other.execute("SELECT id FROM requests WHERE message_id=?", (payload["message_id"],)).fetchone(), ("tg:43:70",))
+        api = TelegramReceipts(check=committed)
+        self.inbox.ingest(self.owner_message(5, 70))
+        self.assertEqual(self.rows(), [(OWNER, 70, "pending")])
+        self.inbox.flush(api)
+        self.assertEqual(api.reactions(), [{"chat_id": OWNER, "message_id": 70, "reaction": THUMBS_UP, "is_big": False}])
+        self.assertEqual(self.rows(), [(OWNER, 70, "sent")])
+        self.inbox.flush(api)
+        self.assertEqual(len(api.reactions()), 1)
+        # The receipt is not completion: the request still waits for Chief.
+        self.assertEqual(self.status("tg:43:70"), "pending")
+
+    def test_failed_intake_transaction_queues_no_receipt(self):
+        with self.inbox.db:
+            self.inbox.db.execute("CREATE TRIGGER refuse BEFORE INSERT ON requests BEGIN SELECT RAISE(ABORT,'fixture'); END")
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.inbox.ingest(self.owner_message(5, 70))
+        self.assertEqual((self.rows(), self.inbox.meta("offset")), ([], "0"))
+
+    def test_owner_commands_get_receipts_without_any_model_or_request(self):
+        with patch("alfred_report.report", return_value="BACKLOG (0)"), patch("alfred_report.done", return_value="DONE"):
+            for number, command in enumerate(("/status", "/report", "/done", "/help", "/setup"), 1):
+                self.inbox.ingest(self.owner_message(number, 10 + number, text=command))
+        api = TelegramReceipts()
+        with patch("alfred_appserver.Adapter.rpc", side_effect=AssertionError("no model or app-server call")):
+            self.inbox.flush(api)
+        self.assertEqual([payload["message_id"] for payload in api.reactions()], [11, 12, 13, 14, 15])
+        self.assertEqual(self.inbox.db.execute("SELECT count(*) FROM requests").fetchone()[0], 0)
+        self.assertEqual(self.daemon.calls, [])
+
+    def test_duplicate_delivery_and_edits_send_one_receipt(self):
+        update = self.owner_message(5, 70)
+        api = TelegramReceipts()
+        self.inbox.ingest(update)
+        self.inbox.flush(api)
+        self.inbox.ingest(update)
+        redelivered = self.owner_message(6, 70)
+        self.inbox.ingest(redelivered)
+        edit = self.owner_message(7, 70, text="Corrected text")
+        edit["edited_message"] = edit.pop("message")
+        edit["edited_message"]["edit_date"] = 99
+        self.inbox.ingest(edit)
+        self.inbox.flush(api)
+        self.inbox.flush(api)
+        self.assertEqual(len(api.reactions()), 1)
+        self.assertEqual(self.inbox.db.execute("SELECT count(*) FROM requests").fetchone()[0], 2)  # Original and edit kept.
+
+    def test_unknown_contact_rejected_unsaved_and_revoked_get_no_receipt(self):
+        self.inbox.ingest(message(1, user=99, text="Stranger"))
+        if HAS_CONTACT:
+            self.inbox.ingest(message(2, user=CONTACT, text="Contact request"))
+        self.inbox.ingest(self.owner_message(3, 30, text="pass" + "word: " + "-".join(("fixture", "only"))))
+        self.inbox.ingest(self.owner_message(4, 40, text=None, sticker={"file_id": "s"}))
+        self.inbox.ingest(self.owner_message(5, 50, text=None, caption="See file",
+                                             document={"file_id": "big", "file_size": MAX_ATTACHMENT + 1}), Files())
+        self.assertEqual(self.rows(), [])
+        self.inbox.ingest(self.owner_message(6, 60))
+        with self.inbox.db:
+            self.inbox.db.execute("UPDATE users SET added=? WHERE user_id=?", (time.time() + 60, OWNER))  # Re-enrolled later.
+        api = TelegramReceipts()
+        self.inbox.flush(api)
+        self.assertEqual(api.reactions(), [])
+        self.assertEqual(self.rows(), [(OWNER, 60, "failed")])
+
+    async def test_transient_and_rate_limit_failures_keep_input_dispatch_and_reply_then_recover(self):
+        self.inbox.ingest(self.owner_message(5, 70, text="/status"))
+        self.inbox.ingest(self.owner_message(6, 71))
+        api = TelegramReceipts(BridgeError("Telegram HTTP 429", 429, retry_after=5),
+                               BridgeError("Telegram connection unavailable", not_sent=True))
+        self.inbox.flush(api)
+        self.assertEqual([row[2] for row in self.rows()], ["pending", "pending"])
+        self.assertEqual([m for m, _ in api.calls].count("sendMessage"), 1)
+        # Input stays saved and Chief still receives it.
+        await self.adapter.dispatch_pending()
+        self.assertEqual(self.status("tg:43:71"), "processing")
+        self.inbox.flush(api)
+        self.assertEqual(len(api.reactions()), 2)  # Still waiting for the backoff.
+        later = time.time() + 3601
+        with patch("telegram_bridge.time.time", return_value=later):
+            self.inbox.flush(api)
+        self.assertEqual([row[2] for row in self.rows()], ["sent", "sent"])
+        self.assertEqual(len(api.reactions()), 4)
+        self.assertEqual([m for m, _ in api.calls].count("sendMessage"), 1)  # The reply is never resent.
+        self.assertEqual(self.inbox.db.execute("SELECT count(*) FROM requests").fetchone()[0], 1)
+
+    def test_permanent_error_and_bounded_retries_end_without_affecting_other_receipts(self):
+        self.inbox.ingest(self.owner_message(5, 70))
+        self.inbox.ingest(self.owner_message(6, 71))
+        api = TelegramReceipts(BridgeError("Telegram HTTP 400", 400), True)
+        self.inbox.flush(api)
+        self.assertEqual([row[2] for row in self.rows()], ["failed", "sent"])
+        self.inbox.ingest(self.owner_message(7, 72))
+        uncertain = TelegramReceipts(*[BridgeError("Telegram request failed; delivery may be uncertain")] * 10)
+        clock = time.time()
+        for _ in range(10):
+            clock += 3601
+            with patch("telegram_bridge.time.time", return_value=clock):
+                self.inbox.flush(uncertain)
+        self.assertEqual(len(uncertain.reactions()), 8)
+        self.assertEqual(self.rows()[-1], (OWNER, 72, "failed"))
+
+    def test_interrupted_send_is_retried_after_its_lease(self):
+        self.inbox.ingest(self.owner_message(5, 70))
+        with self.inbox.db:
+            self.inbox.db.execute("UPDATE reactions SET status='sending',next_attempt=?", (time.time() + 120,))
+        api = TelegramReceipts()
+        self.inbox.flush(api)
+        self.assertEqual(api.reactions(), [])
+        with patch("telegram_bridge.time.time", return_value=time.time() + 121):
+            self.inbox.flush(api)
+        self.assertEqual(self.rows(), [(OWNER, 70, "sent")])
 
 
 FAKE_FFMPEG = """#!/usr/bin/python3

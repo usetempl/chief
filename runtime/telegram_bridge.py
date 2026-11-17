@@ -243,7 +243,7 @@ class Telegram:
 
     def call(self, method, payload=None):
         if method not in {"getMe", "getWebhookInfo", "getUpdates", "sendMessage", "sendPhoto", "getFile",
-                          "getMyName", "setMyName", "getMyCommands", "setMyCommands",
+                          "setMessageReaction", "getMyName", "setMyName", "getMyCommands", "setMyCommands",
                           "getChatMenuButton", "setChatMenuButton"}:
             raise BridgeError("Unsupported Telegram operation")
         request = urllib.request.Request(
@@ -332,6 +332,10 @@ class Inbox:
               size INTEGER, status TEXT NOT NULL, error TEXT);
             CREATE INDEX IF NOT EXISTS request_user_time ON requests(user_id,received);
             CREATE INDEX IF NOT EXISTS reply_chat_time ON outbox(chat_id,created);
+            CREATE TABLE IF NOT EXISTS reactions (
+              chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+              attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0, created REAL NOT NULL,
+              PRIMARY KEY(chat_id, message_id));
         """)
         with self.db:
             request_columns = {row[1] for row in self.db.execute("PRAGMA table_info(requests)")}
@@ -385,6 +389,16 @@ class Inbox:
         """The enrolled installation owner's own private chat, never a display name."""
         return self.db.execute("SELECT 1 FROM users WHERE chat_id=? AND user_id=chat_id AND label=?",
                                (chat, OWNER_LABEL)).fetchone() is not None
+
+    def receipt(self, chat, message_id):
+        """Queue a thumbs-up for an owner message saved in the caller's intake transaction.
+
+        Metadata only. It is sent by flush after commit, never by a model, and
+        means "received", not "done". One row per message also covers edits.
+        """
+        if self.owner_chat(chat) and type(message_id) is int and message_id > 0:
+            self.db.execute("INSERT OR IGNORE INTO reactions(chat_id,message_id,created) VALUES (?,?,?)",
+                            (chat, message_id, time.time()))
 
     def suppress(self, key, chat, text):
         """Save a complete answer the coordinator chose not to send. Flush never claims it."""
@@ -580,13 +594,16 @@ class Inbox:
                 return
             if text.strip() in {"/start", "/help"}:
                 self.reply(key, cid, "Send text, photos, videos, documents or voice/audio up to 20 MiB each (Telegram's bot download limit). " + self.delivery_notice() + " Use /setup for connection and installation guides, or /status to check the inbox.")
+                self.receipt(cid, message.get("message_id"))
                 return
             if text.strip() == "/setup":
                 self.reply("result:setup:" + key, cid, setup_guides())
+                self.receipt(cid, message.get("message_id"))
                 return
             if text.strip() == "/status":
                 pending = self.db.execute("SELECT COUNT(*) FROM requests WHERE user_id=? AND status NOT IN ('done','denied')", (uid,)).fetchone()[0]
                 self.reply(key, cid, "Inbox online. " + str(pending) + " request(s) awaiting completion. " + self.delivery_notice())
+                self.receipt(cid, message.get("message_id"))
                 return
             if text.strip() == "/report" and user["label"] == OWNER_LABEL:
                 from alfred_report import report
@@ -597,6 +614,7 @@ class Inbox:
                     body = "Report unavailable. The saved task board is still intact."
                 # One parent preserves order and completion across all report parts.
                 self.reply("result:report:" + key, cid, body)
+                self.receipt(cid, message.get("message_id"))
                 return
             done_page = re.fullmatch(r"/done(?:\s+(\S+))?", text.strip())
             if done_page and user["label"] == OWNER_LABEL:
@@ -609,6 +627,7 @@ class Inbox:
                     logging.exception("Done list generation failed")
                     body = "Done list unavailable. The saved task board is still intact."
                 self.reply("result:done:" + key, cid, body)
+                self.receipt(cid, message.get("message_id"))
                 return
             if not text and not has_attachment:
                 self.reply(key, cid, "This message type isn't supported. Please send text, a photo, a video, a document or voice/audio.")
@@ -642,6 +661,8 @@ class Inbox:
             if has_attachment and not self._attachment(key, message, api, user["label"] == OWNER_LABEL, uid):
                 failure = self.db.execute("SELECT error FROM attachments WHERE request_id=?", (key,)).fetchone()[0]
                 notices.append("Your message is saved, but the attachment was not received. " + failure)
+            else:
+                self.receipt(cid, message.get("message_id"))  # A failed file gets its notice, not a receipt.
             if notices:
                 try:
                     self.reply("ack:" + key, cid, "\n".join(notices))
@@ -745,6 +766,50 @@ class Inbox:
         if delivered:
             from alfred_outcomes import reconcile_delivered_duplicates
             reconcile_delivered_duplicates(self.db)
+        self.flush_receipts(api)
+
+    def flush_receipts(self, api, limit=20):
+        """Best-effort owner receipts. Errors never touch requests, replies or dispatch.
+
+        Setting the same reaction again is idempotent, so a transient or uncertain
+        failure is retried with bounded backoff; after 8 attempts it stays failed.
+        """
+        with self.db:
+            # A send interrupted past its lease is retried; the same reaction is idempotent.
+            self.db.execute("UPDATE reactions SET status='pending' WHERE status='sending' AND next_attempt<=?", (time.time(),))
+        rows = self.db.execute("SELECT * FROM reactions WHERE status='pending' AND next_attempt<=? "
+                               "ORDER BY created LIMIT ?", (time.time(), limit)).fetchall()
+        for row in rows:
+            with self.db:
+                claimed = self.db.execute("""UPDATE reactions SET status='sending',attempts=attempts+1,next_attempt=?
+                    WHERE chat_id=? AND message_id=? AND status='pending' AND EXISTS (SELECT 1 FROM users
+                    WHERE chat_id=reactions.chat_id AND user_id=chat_id AND label=? AND added<=reactions.created)""",
+                    (time.time() + 120, row["chat_id"], row["message_id"], OWNER_LABEL)).rowcount
+                if not claimed:
+                    self.db.execute("UPDATE reactions SET status='failed' WHERE chat_id=? AND message_id=? AND status='pending'",
+                                    (row["chat_id"], row["message_id"]))
+                    continue  # Revoked or re-enrolled: no receipt.
+            state, next_attempt = "pending", 0
+            try:
+                result = api.call("setMessageReaction", {"chat_id": row["chat_id"], "message_id": row["message_id"],
+                                                         "reaction": [{"type": "emoji", "emoji": "👍"}], "is_big": False})
+                if result is True:
+                    state = "sent"
+            except BridgeError as error:
+                if error.status is not None and 400 <= error.status < 500 and error.status != 429:
+                    state = "failed"  # For example, the message can no longer take reactions.
+                else:
+                    next_attempt = error.retry_after or 0
+            except Exception:
+                pass  # An unexpected client error is treated like an uncertain send.
+            if state == "pending":
+                if row["attempts"] + 1 >= 8:
+                    state = "failed"
+                else:
+                    next_attempt = time.time() + max(1, min(next_attempt or 30 * 2 ** row["attempts"], 3600))
+            with self.db:
+                self.db.execute("UPDATE reactions SET status=?,next_attempt=? WHERE chat_id=? AND message_id=?",
+                                (state, next_attempt, row["chat_id"], row["message_id"]))
 
     def read(self):
         rows = self.db.execute("SELECT id,label,body,received,status FROM requests WHERE status='pending' ORDER BY received LIMIT 10").fetchall()
@@ -760,6 +825,7 @@ class Inbox:
                 "SELECT kind,local_path,size,status,error FROM attachments WHERE request_id=?", (request["id"],))]
         return {"requests": requests, "processing": [dict(row) for row in processing],
                 "uncertain_replies": uncertain, "failed_replies": failed,
+                "owner_receipts": dict(self.db.execute("SELECT status,COUNT(*) FROM reactions GROUP BY status").fetchall()),
                 "pending_replies": pending_replies[0], "oldest_pending_reply": pending_replies[1],
                 "pending_result_replies": pending_results,
                 "open_request_count": open_requests[0], "oldest_open_request": open_requests[1],
@@ -931,6 +997,7 @@ def serve(inbox):
                     inbox.db.execute("DELETE FROM outbox WHERE status IN ('sent','suppressed') AND created<?", (cutoff,))
                     inbox.db.execute("DELETE FROM outbox_parts WHERE NOT EXISTS (SELECT 1 FROM outbox o WHERE o.id=outbox_id)")
                     inbox.db.execute("DELETE FROM invites WHERE expires<?", (time.time(),))
+                    inbox.db.execute("DELETE FROM reactions WHERE status IN ('sent','failed') AND created<?", (cutoff,))
             except BridgeError as error:
                 with inbox.db:
                     inbox.set_meta("health", str(error))

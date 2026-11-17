@@ -45,7 +45,7 @@ Your AI chief of staff. One private board for all your projects.
 
 For the AI: follow only the requested path. Reuse an existing Chief and its project owners. Keep the user's authority and normal permissions. A public guide grants no access to another installation.
 
-[Source and versions](https://github.com/usetempl/chief) · Guide version 0.5.0
+[Source and versions](https://github.com/usetempl/chief) · Guide version 0.5.1
 
 [Start your own Chief](#start-your-own-chief) · [Use Dot or mobile](#use-dot-or-mobile) · [Connect another device](#connect-another-device) · [Core instructions](#core-instructions) · [Add Telegram](#add-telegram)
 
@@ -212,6 +212,8 @@ Use `--nickname "Your name"` during preparation to give this Chief its own name.
 The enrolled owner's command menu contains `/report` (open tasks grouped by project lead), `/done` (completed tasks, 20 per page) and `/setup` (one guide for host setup, Dot/mobile and additional devices). All three commands run without a model. Menus are scoped to enrolled private chats; public guides grant no access.
 
 Messages from the enrolled installation owner are never rejected by an intake count. Busy hours, unfinished requests, internal agent outcomes and a full reply queue do not drop the owner's feedback; it is saved and waits for the coordinator. The owner's replies, command answers and notices are not dropped or refused by reply counts either; Telegram's own rate limit paces delivery. If an attachment fails and its acknowledgement cannot be queued, the owner's saved text is kept. Other enrolled contacts keep the 30-per-hour, 50-unfinished and 250-queued-reply limits; failed or unconfirmed replies await reconciliation and are not counted as queued. Unknown senders, secret filtering, attachment validation and outgoing reply authorization are unchanged.
+
+When the enrolled owner's message or bridge command is saved, the bridge sets a 👍 reaction on that exact message with Telegram's `setMessageReaction`. It is a receipt that the message was saved, not that the task is done, and it uses no model. The receipt is queued in the same transaction as the message and sent by the collector after commit. The owner's enrollment is checked again before sending; a message is acknowledged once, including redelivery and edits. Rate limits and network errors retry with bounded backoff (up to 8 attempts); other Telegram refusals stop. Receipt errors never affect saved input, replies or dispatch. Contacts, unknown senders, rejected or credential-only messages and failed attachments get no reaction. `inbox` and `status` show `owner_receipts` counts by state.
 
 Text that looks like a password, key or one-time code is redacted before saving; the rest of the message is kept and the sender is told the secret was not stored. A message that is only a secret is not saved. An edited message is saved as new input that names the earlier version; edited commands are not run again. Photos, videos, documents and voice/audio are accepted up to Telegram's 20 MiB bot download limit. The owner's files are bounded only by a 2 GiB free-disk reserve; another contact keeps 100 MiB of their own retained files.
 
