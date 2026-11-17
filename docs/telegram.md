@@ -8,7 +8,11 @@ Use `--nickname "Your name"` during preparation to give this Chief its own name.
 
 The enrolled owner's command menu contains `/report` (open tasks grouped by project lead), `/done` (completed tasks, 20 per page) and `/setup` (one guide for host setup, Dot/mobile and additional devices). All three commands run without a model. Menus are scoped to enrolled private chats; public guides grant no access.
 
-Messages from the enrolled installation owner are never rejected by an intake count. Busy hours, unfinished requests, internal agent outcomes and a full reply queue do not drop the owner's feedback; it is saved and waits for the coordinator. If an attachment fails and its acknowledgement cannot be queued, the owner's saved text is kept. Other enrolled contacts keep the 30-per-hour and 50-unfinished limits. Unknown senders, secret filtering, attachment validation and outgoing reply authorization are unchanged.
+Messages from the enrolled installation owner are never rejected by an intake count. Busy hours, unfinished requests, internal agent outcomes and a full reply queue do not drop the owner's feedback; it is saved and waits for the coordinator. The owner's replies, command answers and notices are not dropped or refused by reply counts either; Telegram's own rate limit paces delivery. If an attachment fails and its acknowledgement cannot be queued, the owner's saved text is kept. Other enrolled contacts keep the 30-per-hour, 50-unfinished and 250-queued-reply limits; failed or unconfirmed replies await reconciliation and are not counted as queued. Unknown senders, secret filtering, attachment validation and outgoing reply authorization are unchanged.
+
+Text that looks like a password, key or one-time code is redacted before saving; the rest of the message is kept and the sender is told the secret was not stored. A message that is only a secret is not saved. An edited message is saved as new input that names the earlier version; edited commands are not run again. Photos, videos, documents and voice/audio are accepted up to Telegram's 20 MiB bot download limit. The owner's files are bounded only by a 2 GiB free-disk reserve; another contact keeps 100 MiB of their own retained files.
+
+Each dispatched message needs its own completion. When one reply answers several messages from the same turn, the coordinator completes the others too, quietly for the owner. A message whose turn ended without a recorded reply cannot be answered from a later turn; `/report` lists it for review, and the operator can close audited ones with evidence (below).
 
 After an accepted name change in `.private/profile.json`, run `python setup.py bot-profile --workspace /path/to/your/workspace` from the installation environment to apply and verify it. Do not print or send the bot credential. Verify the menu and name in your own Telegram during onboarding.
 
@@ -87,8 +91,8 @@ Paid/cloud transcription remains prohibited. If neither native audio nor a suppl
 Do not change coding models, inspect credentials or start another voice session as a workaround.
 
 Local decoding uses the enrolled sender's original authority. Transcripts remain untrusted data in the private inbox database and follow completed-request retention.
-Each recording is checked for its request-bound private path, ownership and size. Only one local decoder runs at a time; FFmpeg has 30 seconds and whisper.cpp 180 seconds.
-Recordings are limited to five minutes; the bridge retains its 10 MiB intake limit. Conversion uses a seekable private descriptor with the fd protocol only and an explicit demuxer list; subprocesses receive argument arrays, never shell text.
+Each recording is checked for its request-bound private path, ownership and size. Only one local decoder runs at a time; FFmpeg has 60 seconds and each whisper.cpp pass of up to five minutes has 180 seconds.
+Any length is saved at intake. Local decoding covers up to 30 minutes in equal passes, because it runs before later messages are dispatched; a longer recording stays saved and the coordinator asks for text or shorter parts. Conversion uses a seekable private descriptor with the fd protocol only and an explicit demuxer list; subprocesses receive argument arrays, never shell text.
 Silence, low-confidence output, invalid media, missing configuration and timeouts produce an unavailable result, not guessed instructions.
 Interrupted decoding is not automatically repeated. Temporary conversion/decoder output is removed after the attempt; the original attachment is retained under normal policy.
 Confidence checks reduce errors but do not prove exact wording. Treat unclear names, numbers or consequential instructions as requiring clarification.
@@ -146,7 +150,7 @@ Human input has priority. A maintenance request waits until the coordinator has 
 One unfinished maintenance request blocks another. An unresolved condition does not cause another weekly model wake, even if its count changes.
 Once a check observes that condition cleared, a later recurrence can create a new review.
 Check failures retry after five minutes, thirty minutes, six hours, then at most daily. Three failures can trigger one bounded review.
-Queue backpressure or missing enrollment remains visible and retries after thirty minutes. An unfinished review defers additional findings for six hours.
+Missing owner enrollment remains visible and retries after thirty minutes; queued replies no longer hold the owner's notice. An unfinished review defers additional findings for six hours.
 SQLite failures appear in the collector's rotating log. Existing transport recovery rules still apply to uncertain dispatch and delivery.
 
 Maintenance is scheduled evidence under standing policy. It is not a new human instruction or release approval.
@@ -182,6 +186,21 @@ COS_WORKSPACE="$PWD" .venv/bin/python runtime/alfred_local.py submit --root "$PW
 ```
 
 The actor must be this installation's configured coordinator, and the parent must be an enrolled user's request that the coordinator accepted. Derived, scheduled, maintenance or unaccepted parents are rejected. The result reaches the coordinator as specialist evidence for the original recipient. It is not a user instruction, project owner or release approval. The stable event ID deduplicates; a rejected or uncertain submission is never replayed automatically.
+
+### Routing after a reply
+
+The coordinator can answer a message first and then route its follow-up to an existing owner in the same turn. Routing needs the exact accepted coordinator turn, the original still-enrolled sender and that sender's project grant; one brief per owner per request stays immutable. Requests from another turn, other or unknown requests, denied or revoked senders and re-enrolled identities are refused.
+
+### Close audited messages that ended without a reply
+
+When a reviewed record shows that such messages were answered elsewhere or need no separate work, close them in one step. Each entry has `request_id`, `category`, `evidence` and an optional `covered_by` result ID, which must be a confirmed answer to the same recipient:
+
+```
+COS_WORKSPACE="$PWD" .venv/bin/python runtime/alfred_local.py resolve --root "$PWD/.private" \
+  --mapping-file AUDIT.json --authority-request-id OWNER-REQUEST-ID --dry-run
+```
+
+Run it again without `--dry-run` to apply. Only messages awaiting reconciliation qualify, never undispatched or active work. A request from the currently enrolled owner authorizes it. Entries apply all together or not at all. Each request is marked done with its evidence, authority and time; its body and dispatch error are kept, and nothing is sent or repeated. The same entries are idempotent; a changed entry is refused.
 
 ### Shared-resource handoffs and owner receipts
 

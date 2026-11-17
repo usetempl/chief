@@ -17,7 +17,10 @@ import tempfile
 import time
 import wave
 
-MAX_SECONDS = 300
+MAX_SECONDS = 300  # One whisper.cpp pass, within its 180-second timeout.
+# Decoding runs before dispatch of later messages, so one recording is limited to
+# six sequential passes. Longer audio stays saved; Chief asks for text or parts.
+MAX_TOTAL_SECONDS = 30 * 60
 MAX_BYTES = 20 * 1024 * 1024
 EXTENSIONS = {".ogg", ".mp3", ".m4a", ".wav", ".oga", ".opus", ".flac", ".aac", ".mp4", ".webm"}
 
@@ -204,28 +207,47 @@ def transcribe(root, request_id, attachment, cancel=None):
                 wav = temp / "audio.wav"
                 run_local([config["ffmpeg"], "-nostdin", "-v", "error", "-protocol_whitelist", "fd",
                     "-format_whitelist", "ogg,mp3,wav,flac,aac,mov,matroska,webm", "-fd", "0", "-i", "fd:",
-                    "-t", str(MAX_SECONDS + 1), "-fs", "10000000", "-map", "0:a:0",
-                    "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav)], temp, 30,
+                    "-t", str(MAX_TOTAL_SECONDS + 1), "-fs", str(32000 * (MAX_TOTAL_SECONDS + 1) + 4096), "-map", "0:a:0",
+                    "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav)], temp, 60,
                     input_data=data, cancel=cancel, lock_fd=lock.fileno())
                 with wave.open(str(wav), "rb") as stream:
-                    duration = stream.getnframes() / stream.getframerate()
-                    if not 0.2 <= duration <= MAX_SECONDS:
+                    rate, frames = stream.getframerate(), stream.getnframes()
+                    duration = frames / rate
+                    if not 0.2 <= duration <= MAX_TOTAL_SECONDS:
                         raise ValueError("audio_duration_limit")
-                    samples = array.array("h", stream.readframes(stream.getnframes()))
+                    pcm = stream.readframes(frames)
+                    params = stream.getparams()
+                samples = array.array("h", pcm)
                 if not samples or max(abs(n) for n in samples) < 400 or math.sqrt(sum(n*n for n in samples)/len(samples)) < 70:
                     raise ValueError("no_speech")
-                output = temp / "result"
-                run_local([config["whisper"], "-m", config["model"], "-f", str(wav), "-l", "auto",
-                    "-t", "4", "-bs", "5", "-ojf", "-of", str(output), "-np", "-nt"], temp, 180,
-                    cancel=cancel, lock_fd=lock.fileno())
-                result_path = output.with_suffix(".json")
-                if result_path.stat().st_size > 4 * 1024 * 1024:
-                    raise ValueError("output_limit")
-                text, language = parse_result(json.loads(result_path.read_text()))
-                return {"status": "transcribed", "text": text, "language": language,
+                # Equal passes of at most MAX_SECONDS; every pass must be clear.
+                passes = math.ceil(duration / MAX_SECONDS)
+                size = math.ceil(frames / passes) * params.sampwidth * params.nchannels
+                texts, language = [], "unknown"
+                for index in range(passes):
+                    part = temp / f"part-{index}.wav"
+                    with wave.open(str(part), "wb") as stream:
+                        stream.setparams(params)
+                        stream.writeframes(pcm[index * size:(index + 1) * size])
+                    output = temp / f"result-{index}"
+                    run_local([config["whisper"], "-m", config["model"], "-f", str(part), "-l", "auto",
+                        "-t", "4", "-bs", "5", "-ojf", "-of", str(output), "-np", "-nt"], temp, 180,
+                        cancel=cancel, lock_fd=lock.fileno())
+                    result_path = output.with_suffix(".json")
+                    if result_path.stat().st_size > 4 * 1024 * 1024:
+                        raise ValueError("output_limit")
+                    try:
+                        text, detected = parse_result(json.loads(result_path.read_text()))
+                    except ValueError as error:
+                        if str(error) != "no_speech" or index == 0:
+                            raise
+                        continue  # A silent later pass, such as a pause before hanging up.
+                    texts.append(text)
+                    language = detected if index == 0 else language
+                return {"status": "transcribed", "text": " ".join(texts), "language": language,
                         "engine": "whisper.cpp", "model": Path(config["model"]).name,
                         "audio_sha256": hashlib.sha256(data).hexdigest(), "duration_seconds": round(duration, 2),
-                        "elapsed_seconds": round(time.monotonic() - started, 2), "untrusted": True}
+                        "passes": passes, "elapsed_seconds": round(time.monotonic() - started, 2), "untrusted": True}
     except subprocess.TimeoutExpired:
         return unavailable("local_decoder_timeout")
     except (OSError, ValueError, KeyError, TypeError, wave.Error, OverflowError):

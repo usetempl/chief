@@ -581,10 +581,12 @@ class Adapter:
                              "If speech is missing, unreadable or unclear, ask for text. Never guess its contents. ")
         if any(file["kind"] in {"photo", "image"} for file in files):
             instructions += "Inspect native images before acting. "
-        instructions += "Reply only through alfred_telegram_reply with this exact request_id; final assistant text is not delivered. "
+        instructions += ("Reply only through alfred_telegram_reply with this exact request_id; final assistant text is not delivered. "
+                         "Complete this request_id in this turn even when another reply already answers it; otherwise it stays open for manual review. ")
         if row["label"] == OWNER_LABEL:
             instructions += ("Where the owner's recorded notification preference allows, complete without a Telegram message by starting body "
-                             "with DONT_NOTIFY and a newline, then the complete saved answer. Never hide a direct question this way. ")
+                             "with DONT_NOTIFY and a newline, then the complete saved answer. Never hide a direct question this way. "
+                             "A message already answered by another reply in this turn can be completed this way with that answer. ")
         instructions += "\n"
         return instructions + json.dumps(envelope, ensure_ascii=False)
 

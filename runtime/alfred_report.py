@@ -111,7 +111,11 @@ def report(root=ROOT, db=None, live_claude=None):
                            "WHERE (d.error LIKE 'recovery_required:%' OR d.state IN ('rejected','uncertain')) "
                            "AND r.status IN ('pending','processing')").fetchone()[0]
         issues = db.execute("SELECT COUNT(*) FROM outbox WHERE status IN ('failed','uncertain')").fetchone()[0]
-        lines.append(f"\nDelivery: {issues} flagged replies; {count} requests need reconciliation. Nothing is replayed automatically.")
+        notes = ([f"{issues} repl{'y' if issues == 1 else 'ies'} not confirmed as delivered" ] if issues else []) + (
+            [f"{count} message{'' if count == 1 else 's'} whose processing ended without a recorded reply"] if count else [])
+        if notes:
+            lines.append("\nNeeds Chief's review: " + "; ".join(notes) + ". Nothing is resent or repeated automatically; "
+                         "Chief closes each one only with evidence.")
     lines.append("\nAll open cards are included. Completions: /done. No live checks or model calls.")
     return "\n".join(lines)
 

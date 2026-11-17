@@ -107,11 +107,15 @@ class ProjectRouter:
         """)
 
     def _authorize(self, request_id, coordinator_id, turn_id):
+        # The exact accepted coordinator turn and the original, still-enrolled
+        # sender authorize a route. A reply already sent in that same turn does
+        # not: answering first and routing the follow-up is ordinary work.
+        # Denied requests, other turns and re-enrolled identities stay refused.
         row = self.db.execute("""
             SELECT r.label FROM requests r JOIN appserver_dispatch d ON d.request_id=r.id
             JOIN users u ON u.user_id=r.user_id AND u.chat_id=r.chat_id AND u.label=r.label
             WHERE r.id=? AND d.thread_id=? AND d.turn_id=? AND d.state IN ('accepted','reconciled')
-            AND r.status IN ('pending','processing') AND u.added<=r.received
+            AND r.status IN ('pending','processing','done') AND u.added<=r.received
         """, (request_id, coordinator_id, turn_id)).fetchone()
         if row is None:
             return None

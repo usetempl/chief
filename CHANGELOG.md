@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0 — 2026-11-17
+
+- Route a follow-up after answering first. A request answered earlier in the same coordinator turn can still be routed to an existing owner; the exact turn, still-enrolled original sender, project grant and one immutable brief per owner are still required. Other turns, other or unknown requests, denied, revoked and re-enrolled senders stay refused.
+- The installation owner's replies, command answers and notices are no longer dropped or refused by reply counts. Other contacts keep their limits, and failed or unconfirmed replies no longer count as queued for anyone, so old delivery faults cannot block new answers.
+- Credential-like text is redacted before saving instead of discarding the whole message; the sender is told the secret was not stored. A message that is only a secret is still not saved.
+- Edited Telegram messages are saved as new input that names the earlier version. Edited commands are not run again.
+- Videos, video notes and animations are saved as private opaque files with their caption. Attachments are accepted up to Telegram's 20 MiB bot download limit (was 10 MiB). The owner's files are bounded by a 2 GiB free-disk reserve instead of a shared 100 MiB quota; each other contact keeps a 100 MiB quota of their own files.
+- Voice and audio of any length are saved. Optional local decoding transcribes up to 30 minutes in equal passes of at most five minutes (was a five-minute intake rejection).
+- Recurring tasks are no longer held back while 50 requests are open; one receipt per occurrence already bounds them.
+- New `alfred_local.py resolve`: close audited messages whose turn ended without a reply, with an evidence reference, the owner's authorizing request and an optional confirmed covering reply. All or nothing, idempotent, dry-run first; bodies and dispatch errors are kept and nothing is sent or replayed.
+- `/report` explains open delivery or reconciliation items instead of always printing counters, and coordinators are told to complete each message answered by a combined reply.
+
+Migration: restart the one collector at a safe boundary; it then also receives edited messages. Existing coordinators need no new tool; the combined-reply instruction applies to newly dispatched messages. Review any previously stranded messages, then apply an audited mapping with `resolve --dry-run` before `resolve`.
+
 ## 0.4.2 — 2026-11-17
 
 - Never reject the enrolled installation owner's Telegram messages by an intake count. The 30-per-hour and 50-unfinished gates, which also counted internal agent outcomes, and the 250-queued-reply gate no longer apply to the owner. A failed attachment acknowledgement cannot roll back the owner's saved text.

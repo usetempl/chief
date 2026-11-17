@@ -270,10 +270,8 @@ def due_tasks(inbox, workspace, now=None):
                 if previous is None:
                     if inbox.db.execute("SELECT 1 FROM request_context WHERE event_id=?", (request_id,)).fetchone():
                         raise ValueError("Earlier occurrence receipt retained; reconcile without replay")
-                    # Do not let scheduled work consume unbounded queue capacity.
-                    count = inbox.db.execute("SELECT count(*) FROM requests WHERE status IN ('pending','processing')").fetchone()[0]
-                    if count >= 50:
-                        raise ValueError("Existing work must drain before scheduled work can be queued")
+                    # One receipt per card occurrence bounds scheduled work; dispatch
+                    # already runs it after human requests without steering them.
                     body = ("Recurring task due. Read the private task card " + json.dumps(path.name)
                             + " in tasks/doing (or tasks/todo if its committed queue receipt preceded the move). "
                             "Reconcile the same occurrence before work; do not create a second task.\nScheduled occurrence: " + fields["Next run"])

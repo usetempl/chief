@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import signal
 import socket
 import sqlite3
@@ -28,9 +29,9 @@ from operator_policy import ROOT, BOT, OWNER_LABEL, CONTACT_LABEL, INVITE_FILES,
 
 PREFIX = ""  # Telegram has its own bot identity; the Alfred prefix is WhatsApp-only.
 MAX_TEXT = 4000  # Telegram part size only; never a task or complete-answer limit.
-MAX_ATTACHMENT = 10 * 1024 * 1024
-MAX_ATTACHMENT_STORAGE = 100 * 1024 * 1024
-MAX_AUDIO_DURATION = 5 * 60
+MAX_ATTACHMENT = 20 * 1024 * 1024  # Telegram Bot API getFile download limit.
+MAX_ATTACHMENT_STORAGE = 100 * 1024 * 1024  # Per enrolled contact; the owner is bounded by free disk only.
+ATTACHMENT_FREE_RESERVE = 2 * 1024 ** 3  # Never fill the host disk with received files.
 AUDIO_EXTENSIONS = {".ogg", ".oga", ".opus", ".mp3", ".m4a", ".mp4", ".wav", ".webm", ".flac", ".aac"}
 AUDIO_MIME_EXTENSIONS = {"audio/ogg": ".ogg", "audio/opus": ".opus", "audio/mpeg": ".mp3",
                          "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/wav": ".wav",
@@ -38,6 +39,8 @@ AUDIO_MIME_EXTENSIONS = {"audio/ogg": ".ogg", "audio/opus": ".opus", "audio/mpeg
                          "audio/aac": ".aac"}
 FILE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf", ".txt", ".csv",
                    ".md", ".json", ".docx", ".xlsx", ".pptx", ".zip"}
+VIDEO_KINDS = ("video", "video_note", "animation")
+COMMANDS = {"/start", "/help", "/setup", "/status", "/report", "/done"}
 DELIVERY_NOTICE = "Your messages are saved while Chief's direct connection is unavailable."
 INVITE_CODE = re.compile(r"(?<![A-Za-z0-9_-])invite_[A-Za-z0-9_-]{32}(?![A-Za-z0-9_-])")
 INVITE_LIKE = re.compile(r"(?<![A-Za-z0-9_-])invite_[A-Za-z0-9_-]+")
@@ -375,8 +378,13 @@ class Inbox:
     def outstanding_parts(self, chat):
         return self.db.execute("""SELECT COALESCE(SUM(CASE
             WHEN EXISTS(SELECT 1 FROM outbox_parts p WHERE p.outbox_id=o.id)
-            THEN (SELECT COUNT(*) FROM outbox_parts p WHERE p.outbox_id=o.id AND p.status!='sent')
-            ELSE 1 END),0) FROM outbox o WHERE chat_id=? AND status NOT IN ('sent','suppressed')""", (chat,)).fetchone()[0]
+            THEN (SELECT COUNT(*) FROM outbox_parts p WHERE p.outbox_id=o.id AND p.status IN ('pending','sending'))
+            ELSE 1 END),0) FROM outbox o WHERE chat_id=? AND status IN ('pending','sending')""", (chat,)).fetchone()[0]
+
+    def owner_chat(self, chat):
+        """The enrolled installation owner's own private chat, never a display name."""
+        return self.db.execute("SELECT 1 FROM users WHERE chat_id=? AND user_id=chat_id AND label=?",
+                               (chat, OWNER_LABEL)).fetchone() is not None
 
     def suppress(self, key, chat, text):
         """Save a complete answer the coordinator chose not to send. Flush never claims it."""
@@ -398,17 +406,21 @@ class Inbox:
                     payload["entities"] = [entity | {"offset": entity["offset"] - removed}
                                            for entity in payload.get("entities", [])]
             parts = [wire_body(item) for item in plan]
-        outstanding = self.outstanding_parts(chat)
-        # Backpressure counts pending replies, not the length of one answer.
-        pending_replies = self.db.execute("SELECT COUNT(*) FROM outbox WHERE chat_id=? AND status NOT IN ('sent','suppressed')", (chat,)).fetchone()[0]
-        if pending_replies >= 250:
-            if key.startswith(("result:", "welcome:", "ack:")):
-                raise ReplyQueueFull("Reply queue is full; keep the request uncompleted until delivery is repaired")
-            return
-        if not key.startswith(("result:", "welcome:", "ack:")):
-            recent = self.db.execute("SELECT COUNT(*) FROM outbox WHERE chat_id=? AND created>?", (chat, time.time() - 3600)).fetchone()[0]
-            if recent >= 60 or outstanding >= 200:
-                return  # Bound command/rejection responses as well as accepted feedback.
+        # The installation owner's own replies are never dropped or refused by a
+        # count: each is durable, ordered and paced by Telegram's own 429 backoff.
+        if not self.owner_chat(chat):
+            outstanding = self.outstanding_parts(chat)
+            # Backpressure counts replies still queued to send, not the length of one
+            # answer, nor failed/uncertain records that wait for reconciliation.
+            pending_replies = self.db.execute("SELECT COUNT(*) FROM outbox WHERE chat_id=? AND status IN ('pending','sending')", (chat,)).fetchone()[0]
+            if pending_replies >= 250:
+                if key.startswith(("result:", "welcome:", "ack:")):
+                    raise ReplyQueueFull("Reply queue is full; keep the request uncompleted until delivery is repaired")
+                return
+            if not key.startswith(("result:", "welcome:", "ack:")):
+                recent = self.db.execute("SELECT COUNT(*) FROM outbox WHERE chat_id=? AND created>?", (chat, time.time() - 3600)).fetchone()[0]
+                if recent >= 60 or outstanding >= 200:
+                    return  # Bound command/rejection responses as well as accepted feedback.
         inserted = self.db.execute("INSERT OR IGNORE INTO outbox(id,chat_id,body,created,delivery_plan) VALUES (?,?,?,?,?)",
                                    (key, chat, PREFIX + text, time.time(), json.dumps(plan) if plan else None)).rowcount
         if not inserted:
@@ -443,9 +455,10 @@ class Inbox:
                    "Do not send passwords or keys.")
         return True
 
-    def _attachment(self, key, message, api):
+    def _attachment(self, key, message, api, owner=False, uid=None):
         """Keep untrusted files private and opaque. Never execute or unpack them."""
         document = message.get("document")
+        video = next((kind for kind in VIDEO_KINDS if isinstance(message.get(kind), dict)), None)
         audio_kind = next((kind for kind in ("voice", "audio") if isinstance(message.get(kind), dict)), None)
         if not audio_kind and isinstance(document, dict):
             mime = str(document.get("mime_type", "")).split(";", 1)[0].strip().lower()
@@ -461,20 +474,23 @@ class Inbox:
             source, kind = document, "document"
             suffix = Path(str(source.get("file_name", ""))).suffix.lower()
             suffix = suffix if suffix in FILE_EXTENSIONS else ".bin"
+        elif video:
+            # Saved as an opaque private file like a document; its caption is the request.
+            source, kind, suffix = message[video], "video", ".mp4"
         else:
             photos = [p for p in message.get("photo", []) if isinstance(p, dict)]
             source = max(photos, key=lambda p: p.get("width", 0) * p.get("height", 0), default={})
             kind, suffix = "photo", ".jpg"
         destination = None
-        failure = "Attachment not received. Please resend a file smaller than 10 MiB, or send text"
+        failure = "Attachment not received. Please resend it (Telegram lets bots download files up to 20 MiB), or send text"
         try:
             if audio_kind:
                 duration = source.get("duration")
-                # Telegram documents usually have no duration metadata. They
-                # still use the byte limits and the native-audio capability gate.
+                # Telegram documents usually have no duration metadata. Any length
+                # is saved; the byte limit and the decoder's own capacity apply.
                 if (audio_kind != "document" or duration is not None) and (
-                        isinstance(duration, bool) or not isinstance(duration, (int, float)) or not 0 < duration <= MAX_AUDIO_DURATION):
-                    failure = "Audio must have a valid duration of no more than 5 minutes. Please shorten it or send text"
+                        isinstance(duration, bool) or not isinstance(duration, (int, float)) or not 0 < duration < float("inf")):
+                    failure = "Audio duration is invalid. Please resend the recording or send text"
                     raise BridgeError(failure)
                 if suffix == ".bin":
                     failure = "Audio format unavailable. Please send a voice note, MP3, M4A, OGG or WAV recording"
@@ -483,7 +499,7 @@ class Inbox:
                 raise BridgeError("Attachment download unavailable. Please resend the file")
             declared = source.get("file_size")
             if isinstance(declared, int) and declared > MAX_ATTACHMENT:
-                failure = "Attachment exceeds 10 MiB. Please send a smaller file"
+                failure = "Attachment exceeds Telegram's 20 MiB bot download limit. Please send a smaller file or a link"
                 raise BridgeError(failure)
             directory = self.root / "attachments"
             directory.mkdir(mode=0o700, exist_ok=True)
@@ -491,8 +507,11 @@ class Inbox:
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
                 failure = "Private attachment storage unavailable. Please send text for now"
                 raise BridgeError(failure)
-            used = sum(p.lstat().st_size for p in directory.iterdir())
-            available = min(MAX_ATTACHMENT, MAX_ATTACHMENT_STORAGE - used)
+            available = min(MAX_ATTACHMENT, shutil.disk_usage(directory).free - ATTACHMENT_FREE_RESERVE)
+            if not owner:
+                used = self.db.execute("SELECT COALESCE(SUM(a.size),0) FROM attachments a JOIN requests r ON r.id=a.request_id "
+                                       "WHERE r.user_id=? AND a.status='ready'", (uid,)).fetchone()[0]
+                available = min(available, MAX_ATTACHMENT_STORAGE - used)
             if available <= 0 or (isinstance(declared, int) and declared > available):
                 failure = "Private attachment storage is full. Please send text for now"
                 raise BridgeError(failure)
@@ -521,13 +540,15 @@ class Inbox:
             if update_id < int(self.meta("offset", "0")):
                 return
             self.set_meta("offset", update_id + 1)
-            message = update.get("message") or {}
+            # An edit is new owner input, saved under its own ID; the original stays.
+            edited = not update.get("message") and isinstance(update.get("edited_message"), dict)
+            message = update.get("message") or update.get("edited_message") or {}
             sender, chat = message.get("from") or {}, message.get("chat") or {}
             uid, cid = sender.get("id"), chat.get("id")
             if (chat.get("type") != "private" or not isinstance(uid, int) or uid != cid
                     or sender.get("is_bot") or message.get("date", 0) < float(self.meta("started"))):
                 return
-            has_attachment = (any(isinstance(message.get(kind), dict) for kind in ("document", "voice", "audio"))
+            has_attachment = (any(isinstance(message.get(kind), dict) for kind in ("document", "voice", "audio", *VIDEO_KINDS))
                               or bool(message.get("photo")))
             text = message.get("text", message.get("caption", "") if has_attachment else "")
             if not isinstance(text, str):
@@ -547,13 +568,18 @@ class Inbox:
                 # Unknown senders get no response, stored request or model access.
                 return
             key = "tg:" + str(cid) + ":" + str(message.get("message_id"))
+            original = key
+            if edited:
+                if text.strip().split(" ", 1)[0] in COMMANDS:
+                    return  # Editing a command does not run it again.
+                key += ":edit:" + str(message.get("edit_date") if isinstance(message.get("edit_date"), int) else update_id)
             if self.db.execute("SELECT 1 FROM requests WHERE id=?", (key,)).fetchone():
                 return
             if INVITE_LIKE.search(text):
                 self.reply(key, cid, "Your private inbox is already connected. Send text, a photo, a document or a voice note.")
                 return
             if text.strip() in {"/start", "/help"}:
-                self.reply(key, cid, "Send text, photos or documents up to 10 MiB, or voice/audio up to 5 minutes and 10 MiB. " + self.delivery_notice() + " Use /setup for connection and installation guides, or /status to check the inbox.")
+                self.reply(key, cid, "Send text, photos, videos, documents or voice/audio up to 20 MiB each (Telegram's bot download limit). " + self.delivery_notice() + " Use /setup for connection and installation guides, or /status to check the inbox.")
                 return
             if text.strip() == "/setup":
                 self.reply("result:setup:" + key, cid, setup_guides())
@@ -585,18 +611,22 @@ class Inbox:
                 self.reply("result:done:" + key, cid, body)
                 return
             if not text and not has_attachment:
-                self.reply(key, cid, "Please send text, a photo, a document, or voice/audio up to 5 minutes and 10 MiB.")
+                self.reply(key, cid, "This message type isn't supported. Please send text, a photo, a video, a document or voice/audio.")
                 return
             sanitized, counts = redact(text, conservative=False)
-            if any(name not in {"email", "long_token"} for name in counts):
+            removed = any(name not in {"email", "long_token"} for name in counts)
+            # Never store the credential-like part; keep the rest instead of losing the message.
+            if removed and not has_attachment and not re.search(r"\w", sanitized.replace("[REDACTED]", "")):
                 self.reply(key, cid, "This looks like it contains a key or password. Please resend the feedback without credentials.")
                 return
+            if edited:
+                sanitized = "[Edited Telegram message; earlier version: " + original + "]\n" + sanitized
             recent = self.db.execute("SELECT COUNT(*) FROM requests WHERE user_id=? AND received>?", (uid, time.time() - 3600)).fetchone()[0]
             waiting = self.db.execute("SELECT COUNT(*) FROM requests WHERE user_id=? AND status NOT IN ('done','denied')", (uid,)).fetchone()[0]
             if user["label"] != OWNER_LABEL and (recent >= 30 or waiting >= 50):
                 self.reply(key, cid, "Your earlier feedback is saved. Please wait for it to be handled before sending more.")
                 return
-            pending_replies = self.db.execute("SELECT COUNT(*) FROM outbox WHERE chat_id=? AND status NOT IN ('sent','suppressed')", (cid,)).fetchone()[0]
+            pending_replies = self.db.execute("SELECT COUNT(*) FROM outbox WHERE chat_id=? AND status IN ('pending','sending')", (cid,)).fetchone()[0]
             if pending_replies >= 250 and user["label"] != OWNER_LABEL:
                 raise ReplyQueueFull("Reply queue is full; keep the request uncompleted until delivery is repaired")
             parent = message.get("reply_to_message") or {}
@@ -605,10 +635,16 @@ class Inbox:
                 parent_id = None
             self.db.execute("INSERT OR IGNORE INTO requests(id,update_id,user_id,chat_id,message_id,label,body,received,reply_to_id) VALUES (?,?,?,?,?,?,?,?,?)",
                             (key, update_id, uid, cid, message.get("message_id"), user["label"], sanitized, time.time(), parent_id))
-            if has_attachment and not self._attachment(key, message, api):
+            notices = []
+            if removed:
+                notices.append("Your message is saved without a part that looked like a password, key or code; "
+                               "that part was not stored. Reword it without the secret if Chief needs it.")
+            if has_attachment and not self._attachment(key, message, api, user["label"] == OWNER_LABEL, uid):
                 failure = self.db.execute("SELECT error FROM attachments WHERE request_id=?", (key,)).fetchone()[0]
+                notices.append("Your message is saved, but the attachment was not received. " + failure)
+            if notices:
                 try:
-                    self.reply("ack:" + key, cid, "Your message is saved, but the attachment was not received. " + failure)
+                    self.reply("ack:" + key, cid, "\n".join(notices))
                 except ReplyQueueFull:
                     if user["label"] != OWNER_LABEL:
                         raise
@@ -875,7 +911,7 @@ def serve(inbox):
                 raise BridgeError("Adapter stopped; collector will restart")
             try:
                 updates = api.call("getUpdates", {"offset": int(inbox.meta("offset", "0")), "timeout": 25,
-                                                   "limit": 50, "allowed_updates": ["message"]})
+                                                   "limit": 50, "allowed_updates": ["message", "edited_message"]})
                 for update in updates:
                     inbox.ingest(update, api)
                     if adapter:

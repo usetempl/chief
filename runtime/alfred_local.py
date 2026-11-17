@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import stat
 import time
@@ -220,9 +221,75 @@ def release_owner(inbox, owner_id, event_id):
         inbox.db.execute("INSERT OR IGNORE INTO appserver_local_actions(event_id,owner_id) VALUES (?,?)", (event_id, owner_id))
 
 
+STRANDED = ("(d.error LIKE 'recovery_required:%' OR d.state IN ('rejected','uncertain')) "
+            "AND r.status IN ('pending','processing')")
+
+
+def resolve(inbox, entries, authority_request_id, evidence_ref, *, dry_run=False):
+    """Close audited requests whose turn stopped without a reply, with evidence.
+
+    Only requests awaiting reconciliation qualify, never undispatched or active
+    work. The installation owner's own request authorizes the audit. Each closure
+    keeps its request, dispatch error and evidence; nothing is sent or replayed.
+    All entries are applied together or not at all.
+    """
+    private_root(inbox.root)
+    db = inbox.db
+    db.execute("""CREATE TABLE IF NOT EXISTS request_resolutions (
+        request_id TEXT PRIMARY KEY, category TEXT NOT NULL, evidence TEXT NOT NULL,
+        covered_by TEXT, authority_request_id TEXT NOT NULL, resolved REAL NOT NULL)""")
+    authority = db.execute("""SELECT 1 FROM requests r JOIN users u ON u.user_id=r.user_id AND u.chat_id=r.chat_id
+        AND u.label=r.label AND u.user_id=u.chat_id AND u.added<=r.received
+        LEFT JOIN request_context c ON c.request_id=r.id
+        WHERE r.id=? AND r.label=? AND COALESCE(c.source,'native_user')='native_user'""",
+        (authority_request_id, OWNER_LABEL)).fetchone()
+    if authority is None:
+        raise BridgeError("A request from the currently enrolled installation owner must authorize the resolution")
+    if not isinstance(evidence_ref, str) or not evidence_ref.strip() or not isinstance(entries, list) or not entries:
+        raise BridgeError("An evidence reference and at least one audited entry are required")
+    results, problems = [], []
+    for entry in entries:
+        request_id = entry.get("request_id") if isinstance(entry, dict) else None
+        category, detail = (entry.get("category"), entry.get("evidence")) if isinstance(entry, dict) else (None, None)
+        covered = entry.get("covered_by") if isinstance(entry, dict) else None
+        if (not isinstance(request_id, str) or not isinstance(category, str) or not re.fullmatch(r"[a-z_]{1,64}", category)
+                or not isinstance(detail, str) or not detail.strip()):
+            problems.append({"request_id": request_id, "problem": "request_id, category and evidence are required"})
+            continue
+        evidence = evidence_ref.strip() + "#" + request_id + ": " + redact(detail.strip(), conservative=False)[0]
+        previous = db.execute("SELECT * FROM request_resolutions WHERE request_id=?", (request_id,)).fetchone()
+        if previous:
+            same = (previous["category"], previous["evidence"], previous["covered_by"]) == (category, evidence, covered)
+            (results if same else problems).append({"request_id": request_id, "status" if same else "problem":
+                                                    "already_resolved" if same else "conflicts with an earlier resolution"})
+            continue
+        row = db.execute("SELECT r.chat_id FROM requests r JOIN appserver_dispatch d ON d.request_id=r.id WHERE r.id=? AND "
+                         + STRANDED + " AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.id='result:' || r.id)",
+                         (request_id,)).fetchone()
+        if row is None:
+            problems.append({"request_id": request_id, "problem": "not awaiting reconciliation"})
+            continue
+        if covered is not None and not db.execute("""SELECT 1 FROM outbox WHERE id=? AND chat_id=?
+                AND ((status='sent' AND telegram_id>0) OR status='suppressed')""", (covered, row["chat_id"])).fetchone():
+            problems.append({"request_id": request_id, "problem": "covering reply is not a confirmed answer to the same recipient"})
+            continue
+        results.append({"request_id": request_id, "status": "resolvable" if dry_run else "resolved",
+                        "category": category, "evidence": evidence, "covered_by": covered})
+    if problems or dry_run:
+        return {"applied": False, "results": results, "problems": problems}
+    with db:
+        for item in results:
+            if item["status"] != "resolved":
+                continue
+            db.execute("INSERT INTO request_resolutions VALUES (?,?,?,?,?,?)", (
+                item["request_id"], item["category"], item["evidence"], item["covered_by"], authority_request_id, time.time()))
+            db.execute("UPDATE requests SET status='done' WHERE id=? AND status IN ('pending','processing')", (item["request_id"],))
+    return {"applied": True, "results": results, "problems": []}
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("submit", "handoff", "release-owner", "wake"))
+    parser.add_argument("command", choices=("submit", "handoff", "release-owner", "wake", "resolve"))
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--event-id")
     parser.add_argument("--body-file", type=Path)
@@ -231,9 +298,21 @@ def main():
     parser.add_argument("--parent-request-id")
     parser.add_argument("--route-id")
     parser.add_argument("--verified-native-writer-released", action="store_true")
+    parser.add_argument("--mapping-file", type=Path, help="JSON list, or object with entries: request_id, category, evidence[, covered_by]")
+    parser.add_argument("--authority-request-id")
+    parser.add_argument("--evidence-ref")
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     inbox = Inbox(args.root)
     try:
+        if args.command == "resolve":
+            if not args.mapping_file:
+                raise BridgeError("An audited mapping file is required")
+            mapping = json.loads(args.mapping_file.read_text())
+            result = resolve(inbox, mapping.get("entries") if isinstance(mapping, dict) else mapping,
+                             args.authority_request_id, args.evidence_ref or str(args.mapping_file), dry_run=args.dry_run)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0 if result["applied"] or (args.dry_run and not result["problems"]) else 1
         if args.command == "submit":
             if not args.body_file:
                 raise BridgeError("A private message body file is required")
@@ -258,8 +337,9 @@ def main():
             if args.command == "wake":
                 result["status"] = "wake_unavailable"
         print(json.dumps(result))
-    except (BridgeError, OSError):
-        print(json.dumps({"error": "Local submission rejected; verify private input, identity and endpoint"}))
+    except (BridgeError, OSError, ValueError) as error:
+        detail = str(error) if isinstance(error, BridgeError) and args.command == "resolve" else None
+        print(json.dumps({"error": detail or "Local submission rejected; verify private input, identity and endpoint"}))
         return 1
     finally:
         inbox.db.close()
