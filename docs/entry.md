@@ -44,7 +44,7 @@ Your AI chief of staff. One private board for all your projects.
 
 For the AI: follow only the requested path. Reuse an existing Chief and its project owners. Keep the user's authority and normal permissions. A public guide grants no access to another installation.
 
-[Source and versions](https://github.com/usetempl/chief) · Guide version 0.2.0
+[Source and versions](https://github.com/usetempl/chief) · Guide version 0.2.1
 
 [Start your own Chief](#start-your-own-chief) · [Use Dot or mobile](#use-dot-or-mobile) · [Connect another device](#connect-another-device) · [Core instructions](#core-instructions) · [Add Telegram](#add-telegram)
 
@@ -184,7 +184,7 @@ Research results enter Backlog unless the user commits to the next action. Promo
 
 Record the goal, owner, current evidence/check time, next step and required input. A review card must name `Reviewer:` and the exact decision. AI reviews, technical blockers and unfinished fixes do not belong in human review. Keep their actual state and next action explicit. Do not maintain a second task database.
 
-A running owner, pending agent work or an unperformed extra review is not a blocker. Completed output moves to `review` (or `done`) when it is delivered, even if an automatic callback failed. Canceled work leaves `doing`. Delivery holds are only the user's release/account authority, a human sign-in, a cost limit, real data preservation and privacy. Do not add unrequested reviews, synthetic suites, case counters, reporting loops or dependencies that are already satisfied. Repeat checks only after a failure or material change.
+A running owner, pending agent work or an unperformed extra review is not a blocker. An actually required external input or shared-resource release can be blocked when its missing item and resolver are named. Completed output moves to `review` (or `done`) when it is delivered, even if an automatic callback failed. Canceled work leaves `doing`. Delivery holds are only the user's release/account authority, a human sign-in, a cost limit, real data preservation, privacy or a reproducible failure of the requested main flow. Do not add unrequested reviews, synthetic suites, case counters, reporting loops or dependencies that are already satisfied. Repeat checks only after a failure or material change.
 
 For an explicitly authorized recurring task, record the cadence, timezone, next run and last completed run with evidence. After completion and any required acceptance, retain that evidence and return the same card to `todo` with its next run. Do not advance an incomplete run or overlap runs. These files do not execute schedules. Without a separately authorized, configured scheduler, start the next run on user request.
 

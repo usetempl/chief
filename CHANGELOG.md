@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 — 2026-11-17
+
+- Keep reproducible failures of the requested main flow within the narrow delivery holds.
+- Clarify that a genuinely required external input or shared-resource release can use Blocked with its concrete missing item and resolver. Running work and extra reviews remain outside that column.
+
 ## 0.2.0 — 2026-11-17
 
 - Add a `tasks/blocked/` column for real missing input. `alfred_board.py move` requires `Blocked by:` (the concrete missing item) and `Resolver:` (who can supply it). `/report` and the snapshot list blocked cards between Doing and Review. A running owner or an unperformed review is not a blocker.
