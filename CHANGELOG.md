@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1 — 2026-11-18
+
+- Browser origins reject the URL user-information delimiter directly. This preserves the tab binding checks and lets the source pass the after-answer credential scan.
+
 ## 0.7.0 — 2026-11-18
 
 - **After-answer checkpoint.** New `alfred_checkpoint.py prepare`/`confirm`/`status` turns after-answer bookkeeping into one on-demand, reviewed checkpoint per batch.

@@ -45,7 +45,7 @@ Your AI chief of staff. One private board for all your projects.
 
 For the AI: follow only the requested path. Reuse an existing Chief and its project owners. Keep the user's authority and normal permissions. A public guide grants no access to another installation.
 
-[Source and versions](https://github.com/usetempl/chief) · Guide version 0.7.0
+[Source and versions](https://github.com/usetempl/chief) · Guide version 0.7.1
 
 [Start your own Chief](#start-your-own-chief) · [Use Dot or mobile](#use-dot-or-mobile) · [Connect another device](#connect-another-device) · [Core instructions](#core-instructions) · [Add Telegram](#add-telegram)
 

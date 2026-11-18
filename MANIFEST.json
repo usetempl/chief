@@ -1,8 +1,8 @@
 {
-  "version": "0.7.0",
+  "version": "0.7.1",
   "files": {
     "README.md": "c5188470251013d7485a22318083ef30b3ff692acd007007447b08dbbb1f0821",
-    "VERSION": "967d9afb101346667166f2e76e81910bc190488d7d41d50ca0072e9d92f00e32",
+    "VERSION": "902311c7bb38fa1658ff403def6158ee7378fe9d6e2e284fa1c38735c31bd30b",
     "docs/telegram.md": "788ee1b838960fcf7e35c7e20fb919a7f0e242b37ce4fc816b44c4abdf3fe5a4",
     "onboard.py": "e2bf61327dc9c2eb07c90fabaeae9509fc6003cf9de954dc03b7ca5292c08da2",
     "requirements.txt": "7293d3a2e6e6144e7c64833e133f3f585c4ddb11a77df3a01e8bc18d9b10a4a8",
@@ -10,7 +10,7 @@
     "runtime/alfred_assignments.py": "7be11408850edce0e5900300a1ace98274a1413c2d4fc0f0ea487de934e8f16e",
     "runtime/alfred_audio.py": "a7dd63793af7c907d6cd7d49987333ecdb8f9802c32b34745a038841fa15787f",
     "runtime/alfred_board.py": "cd5353b245a6279fadb69327b85c45d58dc55fe081a10688df6cc4df2d65d6b4",
-    "runtime/alfred_browser.py": "ec075982b576899dacf6f17baf201034f104de99d6b8af44d34cc08a2efe30e0",
+    "runtime/alfred_browser.py": "ec704e2326fc5ea2ec777934855e504ad97f11968903dc3952204969dcbdcf89",
     "runtime/alfred_checkpoint.py": "c269bde9e8ee74567d0a46ff3d07dad4d63bab411a7a254c5d80ab46a9664a38",
     "runtime/alfred_direct.py": "4535ef874a21039daf34abc7476824b9a2ecc258b957e2183921a1b60dadb1a2",
     "runtime/alfred_entry.py": "427bfbe633d359a605574ce7b4c11ed6eae72eb99edf630157e550374e2b1461",

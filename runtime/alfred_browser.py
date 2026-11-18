@@ -68,8 +68,8 @@ def plain_origin(value):
     try:
         parts = urlsplit(value or "")
         port = parts.port
-        if (parts.scheme not in {"http", "https"} or not parts.hostname or parts.username is not None
-                or parts.password is not None or parts.path not in {"", "/"} or parts.query or parts.fragment
+        if (parts.scheme not in {"http", "https"} or not parts.hostname or "@" in parts.netloc
+                or parts.path not in {"", "/"} or parts.query or parts.fragment
                 or any(c.isspace() or c in "\\\x00" for c in value)):
             raise ValueError
     except (ValueError, TypeError):
