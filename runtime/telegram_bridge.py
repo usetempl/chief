@@ -62,14 +62,19 @@ class ReplyQueueFull(BridgeError):
     """Ingestion was refused before the Telegram update was acknowledged."""
 
 
-def text_parts(text):
-    """Keep every character, prefer line boundaries, and count UTF-16 units."""
+def reply_text_units(text):
+    """Validate a saved reply and return its length in UTF-16 units."""
     if not isinstance(text, str) or not text.strip() or "\0" in text:
         raise BridgeError("A nonempty text reply without NUL characters is required")
     try:
-        units = len(text.encode("utf-16-le")) // 2
+        return len(text.encode("utf-16-le")) // 2
     except UnicodeError:
         raise BridgeError("Reply contains invalid Unicode") from None
+
+
+def text_parts(text):
+    """Keep every character and prefer line boundaries."""
+    units = reply_text_units(text)
     if units <= MAX_TEXT:
         return [text]
     chunks, start, size, last_break = [], 0, 0, 0

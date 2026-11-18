@@ -1,5 +1,6 @@
 """Owner request lifecycles that must not hit an unnecessary gate, plus the boundaries that remain."""
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -7,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 from types import SimpleNamespace
 import unittest
@@ -28,11 +30,12 @@ sys.path.insert(0, str(CODE))
 import alfred_projects
 from alfred_appserver import Adapter
 from alfred_audio import MAX_SECONDS, transcribe
-from alfred_local import resolve
+from alfred_entry import result, wait_result
+from alfred_local import resolve, submit
 from alfred_projects import TOOL_NAME as ROUTE_TOOL
 from alfred_report import report
 from alfred_tasks import due_tasks
-from operator_policy import CONTACT_LABEL, OWNER_LABEL
+from operator_policy import CONTACT_LABEL, OWNER_LABEL, TURN_SETTINGS
 from telegram_bridge import BridgeError, Inbox, MAX_ATTACHMENT, MAX_ATTACHMENT_STORAGE
 
 COORDINATOR = "00000000-0000-4000-8000-0000000000c0"
@@ -117,15 +120,46 @@ class Base(unittest.IsolatedAsyncioTestCase):
                                           "tool": "alfred_telegram_reply", "arguments": {"request_id": request_id, "body": body}})
         return result["success"], result["contentItems"][0]["text"]
 
-    async def route(self, request_id, turn, call, brief="Fix the checkout bug and return the verified result"):
+    async def route(self, request_id, turn, call, brief="Fix the checkout bug and return the verified result", owner=PROJECT_OWNER):
         result = await self.adapter.router.handle({
             "threadId": COORDINATOR, "turnId": turn, "callId": call, "tool": ROUTE_TOOL,
-            "arguments": {"request_id": request_id, "owner_id": "codex:" + PROJECT_OWNER, "brief": brief}})
+            "arguments": {"request_id": request_id, "owner_id": "codex:" + owner, "brief": brief}})
         return json.loads(result["contentItems"][0]["text"])["status"]
 
     async def drain(self):
         while self.adapter.router.tasks:
             await asyncio.gather(*list(self.adapter.router.tasks))
+
+
+class CoordinatorTurnSettings(Base):
+    async def test_idle_dispatch_uses_installed_policy_once_and_saves_the_mapping(self):
+        self.inbox.ingest(message(1))
+        await self.adapter.dispatch_pending()
+        await self.adapter.dispatch_pending()
+        starts = [params for method, params in self.daemon.calls if method == "turn/start"]
+        self.assertEqual(len(starts), 1)
+        start = starts[0]
+        settings = {key: value for key, value in start.items() if key not in {"threadId", "clientUserMessageId", "input"}}
+        self.assertEqual(settings, TURN_SETTINGS)
+        self.assertEqual(start["threadId"], COORDINATOR)
+        saved = self.inbox.db.execute("SELECT client_id,thread_id,turn_id,state FROM appserver_dispatch WHERE request_id=?",
+                                      ("tg:43:1",)).fetchone()
+        self.assertEqual(tuple(saved), (start["clientUserMessageId"], COORDINATOR, self.daemon.active, "accepted"))
+
+    async def test_model_and_effort_apply_only_to_a_new_coordinator_turn(self):
+        policy = {"model": "fixture-model", "effort": "high", "serviceTier": "default", "serviceTierForTurn": "default"}
+        with patch("alfred_appserver.TURN_SETTINGS", policy):
+            self.inbox.ingest(message(1))
+            await self.adapter.dispatch_pending()
+            self.inbox.ingest(message(2))
+            await self.adapter.dispatch_pending()
+            self.assertEqual(await self.route("tg:43:1", self.daemon.active, "route"), "accepted")
+        calls = [(method, params) for method, params in self.daemon.calls if method in ("turn/start", "turn/steer")]
+        self.assertEqual([(method, params["threadId"]) for method, params in calls],
+                         [("turn/start", COORDINATOR), ("turn/steer", COORDINATOR), ("turn/start", PROJECT_OWNER)])
+        for index, (_, params) in enumerate(calls):
+            self.assertEqual({key: params[key] for key in policy if key in params}, policy if index == 0 else {})
+        self.assertEqual(calls[1][1]["expectedTurnId"], self.daemon.active)
 
 
 class RouteAfterReply(Base):
@@ -184,6 +218,190 @@ class RouteAfterReply(Base):
             self.inbox.db.execute("INSERT INTO users VALUES (?,?,?,?)", (OWNER, OWNER, OWNER_LABEL, time.time()))
         self.assertEqual(await self.route("tg:43:2", second, "re-enrolled"), "rejected_unauthorized_request")
         self.assertFalse(any(method == "turn/start" and params["threadId"] == PROJECT_OWNER for method, params in self.daemon.calls))
+
+
+class InterruptedReplies(Base):
+    async def test_resumed_owner_turn_finishes_the_original_request_without_replaying_work(self):
+        self.inbox.ingest(message(1))
+        await self.adapter.dispatch_pending()
+        original = self.daemon.active
+        self.adapter.fault_turn(COORDINATOR, original, "interrupted")
+        self.daemon.active = None
+        self.inbox.ingest(message(2, text="Continue the saved work."))
+        await self.adapter.dispatch_pending()
+        resumed = self.daemon.active
+        calls = list(self.daemon.calls)
+        self.assertTrue(self.reply("tg:43:1", "The saved work is complete.", resumed, "recovered-answer")[0])
+        self.assertTrue(self.reply("tg:43:1", "The saved work is complete.", resumed, "recovered-retry")[0])
+        self.assertEqual(self.daemon.calls, calls)
+        self.assertEqual(self.status("tg:43:1"), "done")
+        self.assertEqual(tuple(self.inbox.db.execute("SELECT turn_id,error FROM appserver_dispatch WHERE request_id='tg:43:1'").fetchone()),
+                         (original, "recovery_required:interrupted"))
+        self.assertEqual(self.inbox.db.execute("SELECT count(*) FROM outbox WHERE id='result:tg:43:1'").fetchone()[0], 1)
+
+    async def test_other_turns_failures_and_changed_enrollment_cannot_complete_the_request(self):
+        self.inbox.ingest(message(1))
+        await self.adapter.dispatch_pending()
+        original = self.daemon.active
+        self.daemon.active = None
+        self.inbox.ingest(message(2))
+        await self.adapter.dispatch_pending()
+        resumed = self.daemon.active
+        self.assertFalse(self.reply("tg:43:1", "Must stay open.", resumed, "not-interrupted")[0])
+        for reason in ("failed", "approval", "unsupported_tool"):
+            self.adapter.fault_turn(COORDINATOR, original, reason)
+            self.assertFalse(self.reply("tg:43:1", "Must stay open.", resumed, reason)[0])
+        self.adapter.fault_turn(COORDINATOR, original, "interrupted")
+        self.assertFalse(self.reply("tg:43:1", "Must stay open.", "unaccepted-turn", "no-turn")[0])
+        if HAS_CONTACT:
+            self.daemon.active = None
+            self.inbox.ingest(message(3, user=CONTACT))
+            await self.adapter.dispatch_pending()
+            self.assertFalse(self.reply("tg:43:1", "Must stay open.", self.daemon.active, "other-recipient")[0])
+        with self.inbox.db:
+            self.inbox.db.execute("UPDATE users SET added=? WHERE user_id=?", (time.time() + 2, OWNER))
+        self.assertFalse(self.reply("tg:43:1", "Must stay open.", resumed, "changed-enrollment")[0])
+        self.assertEqual(self.status("tg:43:1"), "processing")
+        self.assertIsNone(self.inbox.db.execute("SELECT 1 FROM outbox WHERE id='result:tg:43:1'").fetchone())
+
+
+class OutcomeDelivery(Base):
+    def test_simultaneous_local_retries_share_one_request(self):
+        ready = threading.Barrier(2)
+
+        def submit_again():
+            box = Inbox(self.root)
+            try:
+                ready.wait(timeout=5)
+                return submit(box, "host-retry", "Check the order.")
+            finally:
+                box.db.close()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first, second = [pool.submit(submit_again) for _ in range(2)]
+            self.assertEqual(first.result(), second.result())
+        with self.assertRaises(BridgeError):
+            submit(self.inbox, "host-retry", "A different request.")
+        self.assertEqual(self.inbox.db.execute("SELECT count(*) FROM requests").fetchone()[0], 1)
+
+    async def test_host_reads_quiet_specialist_result_and_can_answer_multiple_results(self):
+        config = self.root / "appserver.json"
+        config.write_text(json.dumps({"enabled": True, "thread_id": COORDINATOR}))
+        config.chmod(0o600)
+        parent = submit(self.inbox, "host-review", "Review the saved work.")
+        await self.adapter.dispatch_pending()
+        actor = "codex:" + COORDINATOR
+        self.index.write_text(self.index.read_text().replace("| P0 |", "| P1 |"))
+        with self.assertRaises(BridgeError):
+            submit(self.inbox, "unbound-specialist", "First check complete.", "project_outcome", actor)
+        child = submit(self.inbox, "first-check", "First check complete.", "project_outcome", actor, parent)
+        await self.adapter.dispatch_pending()
+        answer = "![Local preview](checks/preview.png)\nThe first check passed."
+        self.assertFalse(self.reply(child, answer, self.daemon.active, "send-local-preview")[0])
+        self.assertTrue(self.reply(child, "DONT_NOTIFY\n" + answer, self.daemon.active, "first-answer")[0])
+        saved = wait_result(parent, 1, self.root)
+        self.assertEqual((saved["wait_state"], saved["answer"], saved["delivery_state"]), ("answer_saved", answer, "suppressed"))
+        self.assertEqual(saved["answer_source_request_id"], child)
+
+        other = submit(self.inbox, "second-check", "Second check complete.", "project_outcome", actor, parent)
+        self.assertIsNone(result(parent, self.root)["answer"])
+        await self.adapter.dispatch_pending()
+        self.assertTrue(self.reply(other, "DONT_NOTIFY\nThe second check passed.", self.daemon.active, "second-answer")[0])
+        self.assertIsNone(result(parent, self.root)["answer"])
+        self.assertTrue(self.reply(parent, "Both checks passed.", self.daemon.active, "combined-answer")[0])
+        self.assertEqual(result(parent, self.root)["answer"], "Both checks passed.")
+        self.assertEqual(self.inbox.db.execute("SELECT count(*) FROM outbox WHERE status='pending'").fetchone()[0], 1)
+
+    async def test_queued_owner_answer_is_readable_with_its_actual_delivery_state(self):
+        parent = submit(self.inbox, "host-order", "Check the order.")
+        await self.adapter.dispatch_pending()
+        self.assertEqual(await self.route(parent, self.daemon.active, "order-route"), "accepted")
+        self.adapter.router.notification({"method": "turn/completed", "params": {"threadId": PROJECT_OWNER, "turn": {
+            "id": "owner-turn", "status": "completed", "items": [{"type": "agentMessage", "text": "Order checked."}]}}})
+        await self.drain()
+        child = self.inbox.db.execute("SELECT request_id FROM request_context WHERE parent_request_id=?", (parent,)).fetchone()[0]
+        await self.adapter.dispatch_pending()
+        self.assertTrue(self.reply(child, "The order is ready.", self.daemon.active, "order-answer")[0])
+        saved = wait_result(parent, 1, self.root)
+        self.assertEqual((saved["answer"], saved["delivery_state"]), ("The order is ready.", "queued"))
+        self.assertEqual(saved["answer_source_request_id"], child)
+        with self.inbox.db:
+            self.inbox.db.execute("UPDATE outbox SET status='uncertain' WHERE id=?", ("result:" + child,))
+        self.assertEqual(result(parent, self.root)["delivery_state"], "uncertain")
+        self.assertEqual(self.inbox.db.execute("SELECT count(*) FROM outbox").fetchone()[0], 1)
+        second_owner = "00000000-0000-4000-8000-0000000000a2"
+        with self.index.open("a") as index:
+            index.write(f"| P3 | Shipping | repo | checkout | `codex:{second_owner}` |\n")
+        self.assertEqual(await self.route(parent, self.daemon.active, "shipping", owner=second_owner), "accepted")
+        self.assertIsNone(result(parent, self.root)["answer"])
+
+    async def test_new_enrollment_cannot_read_or_relay_an_earlier_request(self):
+        parent = submit(self.inbox, "before-enrollment-change", "Review the order.")
+        await self.adapter.dispatch_pending()
+        self.assertTrue(self.reply(parent, "DONT_NOTIFY\nReview saved.", self.daemon.active, "saved-review")[0])
+        with self.inbox.db:
+            self.inbox.db.execute("UPDATE users SET added=? WHERE user_id=?", (time.time(), OWNER))
+        self.assertEqual(result(parent, self.root), {"request_id": parent, "status": "not_found_or_not_allowed"})
+        with self.assertRaises(BridgeError):
+            submit(self.inbox, "late-result", "Earlier evidence.", "project_outcome", "codex:" + PROJECT_OWNER, parent)
+        with self.assertRaises(BridgeError):
+            submit(self.inbox, "before-enrollment-change", "Review the order.")
+        fresh = submit(self.inbox, "after-enrollment-change", "Review the next order.")
+        self.assertEqual(result(fresh, self.root)["status"], "found")
+
+    async def test_duplicate_outcomes_only_share_a_receipt_within_one_enrollment(self):
+        for event in ("earlier", "current", "duplicate"):
+            parent = submit(self.inbox, event, "Review the order.")
+            await self.adapter.dispatch_pending()
+            self.assertEqual(await self.route(parent, self.daemon.active, event), "accepted")
+            self.adapter.router.notification({"method": "turn/completed", "params": {"threadId": PROJECT_OWNER, "turn": {
+                "id": "owner-turn", "status": "completed", "items": [{"type": "agentMessage", "text": "Order checked."}]}}})
+            await self.drain()
+            child = self.inbox.db.execute("SELECT request_id FROM request_context WHERE parent_request_id=?", (parent,)).fetchone()[0]
+            await self.adapter.dispatch_pending()
+            if event == "duplicate":
+                self.assertEqual(self.status(child), "done")
+                saved = result(parent, self.root)
+                self.assertEqual((saved["answer"], saved["delivery_state"]), ("current answer", "suppressed"))
+                self.assertIsNone(self.inbox.db.execute("SELECT 1 FROM outbox WHERE id=?", ("result:" + child,)).fetchone())
+                continue
+            self.assertEqual(self.status(child), "processing")
+            self.assertIsNone(result(parent, self.root)["answer"])
+            self.assertTrue(self.reply(child, "DONT_NOTIFY\n" + event + " answer", self.daemon.active, event + "-reply")[0])
+            self.assertEqual(result(parent, self.root)["answer"], event + " answer")
+            if event == "earlier":
+                with self.inbox.db:
+                    self.inbox.db.execute("UPDATE users SET added=? WHERE user_id=?", (time.time(), OWNER))
+
+    async def test_retired_owner_result_keeps_its_receipt_and_does_not_block_reconnect(self):
+        parent = submit(self.inbox, "owner-retirement", "Review the order.")
+        await self.adapter.dispatch_pending()
+        self.assertEqual(await self.route(parent, self.daemon.active, "route"), "accepted")
+        registry = self.index.read_text()
+        self.index.unlink()
+        router = self.adapter.router
+        router.notification({"method": "turn/completed", "params": {"threadId": PROJECT_OWNER, "turn": {
+            "id": "owner-turn", "status": "completed", "items": [{"type": "agentMessage", "text": "Order checked."}]}}})
+        await self.drain()
+        await router.reconcile()
+        held = self.inbox.db.execute("SELECT state,outcome,delivered,error FROM appserver_project_routes").fetchone()
+        self.assertEqual(tuple(held)[:3], ("completed", "Order checked.", 0))
+        self.assertTrue(held["error"])
+        fresh = submit(self.inbox, "another-question", "Read the board.")
+        await self.adapter.dispatch_pending()
+        self.assertEqual(self.status(fresh), "processing")
+        self.assertFalse(self.inbox.db.execute("SELECT 1 FROM request_context WHERE parent_request_id=?", (parent,)).fetchone())
+
+        self.index.write_text(registry.replace("| Shop |", "| Another project |"))
+        await router.reconcile()
+        self.assertEqual(await self.route(parent, self.daemon.active, "route"), "rejected_project_scope")
+        self.assertEqual(self.inbox.db.execute("SELECT delivered FROM appserver_project_routes").fetchone()[0], 0)
+        self.index.write_text(registry)
+        await router.reconcile()
+        await router.reconcile()
+        self.assertEqual(tuple(self.inbox.db.execute("SELECT delivered,error FROM appserver_project_routes").fetchone()), (1, None))
+        self.assertEqual(self.inbox.db.execute("SELECT count(*) FROM request_context WHERE parent_request_id=?", (parent,)).fetchone()[0], 1)
+        self.assertEqual(sum(method == "turn/start" and params["threadId"] == PROJECT_OWNER for method, params in self.daemon.calls), 1)
 
 
 class OwnerIntake(Base):

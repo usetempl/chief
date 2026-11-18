@@ -22,6 +22,7 @@ import uuid
 from history_safety import redact
 from operator_policy import WORKSPACE, OWNER_LABEL, OWNER_AUTHORITY, ROUTE_AUTHORITY, allows_project
 from alfred_local import current_sender
+from telegram_bridge import BridgeError
 
 PROJECTS = WORKSPACE / "projects.md"
 TOOL_NAME = "alfred_project_route"
@@ -39,7 +40,11 @@ IDENTITY = re.compile(r"`(" + OWNER_PATTERN + r")`")
 
 def registered_owners(path=PROJECTS):
     owners = {}
-    for line in Path(path).read_text().splitlines():
+    try:
+        lines = Path(path).read_text().splitlines()
+    except FileNotFoundError:
+        return owners
+    for line in lines:
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
         if len(cells) != 5 or not re.fullmatch(r"P[1-9][0-9]*", cells[0]):
             continue
@@ -53,14 +58,11 @@ def registered_owners(path=PROJECTS):
 
 
 def project_route_tool(path=PROJECTS):
-    owners = registered_owners(path)
+    """Keep the existing call signature. The frozen tool schema needs no owner snapshot."""
     return {
         "type": "function", "name": TOOL_NAME,
-        "description": "Send one concise brief to a project's existing owner. Preserve its scope and sender authority. "
-                       "A held native owner keeps a durable pending brief. Never create a replacement owner. "
-                       "Only final outcomes or real blockers return. The current projects.md registry is authoritative "
-                       "on every call; this list is a snapshot from thread creation. Registered owners: " +
-                       "; ".join(item["project"] + "=" + owner for owner, item in owners.items()),
+        "description": "Read projects.md to select the existing owner. Send one brief within the sender's authority and release rules. "
+                       "A busy owner keeps the pending brief. The owner returns a final outcome or a blocker.",
         # No enum: app-server freezes dynamic tools at thread/start, so an enum would
         # hide owners added later. handle() validates against the live registry.
         "inputSchema": {"type": "object", "additionalProperties": False,
@@ -180,6 +182,8 @@ class ProjectRouter:
         previous = self.db.execute("SELECT * FROM appserver_project_routes WHERE request_id=? AND owner_id=?",
                                    (args["request_id"], args["owner_id"])).fetchone()
         if previous:
+            if previous["project"] != owner["project"]:
+                return self.result("rejected_project_scope")
             if previous["brief"] != brief:
                 return self.result("rejected_conflicting_brief", route_id=previous["route_id"])
             return self.route_result(previous)
@@ -382,11 +386,21 @@ class ProjectRouter:
             return
         event = {"event_id": "project-outcome:" + route_id, "route_id": route_id, "request_id": row["request_id"],
                  "owner_id": row["owner_id"], "project": row["project"], "status": row["state"], "body": row["outcome"]}
-        result = self.on_outcome(event)
-        if inspect.isawaitable(result):
-            await result
+        try:
+            result = self.on_outcome(event)
+            if inspect.isawaitable(result):
+                await result
+        except BridgeError as error:
+            # Keep the terminal evidence and the same event ID for reconciliation.
+            detail = "Outcome relay held. " + safe_text(str(error))
+            with self.db:
+                self.db.execute("UPDATE appserver_project_routes SET error=?,updated=? WHERE route_id=? AND delivered=0 AND error IS NOT ?",
+                                (detail, time.time(), route_id, detail))
+            return
         with self.db:
-            self.db.execute("UPDATE appserver_project_routes SET delivered=1 WHERE route_id=?", (route_id,))
+            self.db.execute("""UPDATE appserver_project_routes SET delivered=1,updated=?,
+                            error=CASE WHEN error LIKE 'Outcome relay held.%' THEN NULL ELSE error END
+                            WHERE route_id=?""", (time.time(), route_id))
 
     async def reconcile(self):
         owners = registered_owners(self.projects_path)

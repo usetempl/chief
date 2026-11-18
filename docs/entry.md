@@ -45,7 +45,7 @@ Your AI chief of staff. One private board for all your projects.
 
 For the AI: follow only the requested path. Reuse an existing Chief and its project owners. Keep the user's authority and normal permissions. A public guide grants no access to another installation.
 
-[Source and versions](https://github.com/usetempl/chief) · Guide version 0.5.1
+[Source and versions](https://github.com/usetempl/chief) · Guide version 0.5.2
 
 [Start your own Chief](#start-your-own-chief) · [Use Dot or mobile](#use-dot-or-mobile) · [Connect another device](#connect-another-device) · [Core instructions](#core-instructions) · [Add Telegram](#add-telegram)
 
@@ -101,7 +101,9 @@ Instructions for the agent:
 5. Return the `answer` to the phone. When `wait_state` is `answer_saved` and the answer is exactly `Dot connection confirmed`, setup has passed. Say so yourself; do not ask the user to confirm a result the command already returned. Submission acceptance alone does not pass this check.
 6. If the command returns `wait_state: timed_out_pending` (exit code 4), report pending with the same `request_id` and later run the same command again. Never resubmit, change the event ID or start a background monitor. `not_found_or_not_allowed` means this reader cannot access that request; report it.
 
-Use the same submit/result path for later requests. Preserve the original sender's authority. This connection test does not enroll another device or qualify a render worker.
+Use the same submit/result path for later requests. The original request ID can return a saved answer from one matching owner or specialist. In that case, `answer_source_request_id` identifies the outcome. Check `delivery_state` for Telegram delivery. If several outcomes need a combined answer, that answer belongs on the original request ID.
+
+Preserve the original sender's authority. This connection test does not enroll another device or qualify a render worker.
 
 A public guide, a device name and a thread ID grant no access. If the connection cannot reach the host or invoke its relay, report that specific gap. Use a Telegram bridge only if this person already has their own enrolled access. Do not contact another person's bot or create an adapter as a setup shortcut.
 

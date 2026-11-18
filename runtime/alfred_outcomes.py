@@ -6,6 +6,25 @@ work, or treats an answered blocker as a completed project.
 import time
 
 
+# Waiting and reconciliation must agree on the exact route, parent and enrollment.
+ROUTED_OUTCOMES = """
+    WITH outcomes AS (
+      SELECT child.id, child.status, child.received, child.user_id, child.chat_id, child.label,
+             parent.id AS parent_id, p.owner_id, p.turn_id, p.state, p.outcome, p.project
+      FROM appserver_project_routes p
+      JOIN request_context c ON c.event_id='project-outcome:' || p.route_id
+        AND c.source='project_outcome' AND c.actor=p.owner_id AND c.parent_request_id=p.request_id
+      JOIN requests child ON child.id=c.request_id
+      JOIN requests parent ON parent.id=p.request_id
+        AND parent.user_id=child.user_id AND parent.chat_id=child.chat_id AND parent.label=child.label
+      JOIN users u ON u.user_id=child.user_id AND u.chat_id=child.chat_id AND u.label=child.label
+        AND u.added<=child.received AND u.added<=parent.received
+      WHERE p.state IN ('completed','blocked') AND p.turn_id!='' AND p.outcome!=''
+        AND child.status IN ('pending','processing','done')
+    )
+"""
+
+
 def duplicate_outcome_waits(db, *, replies_only=False):
     """Map open receipts to an equivalent receipt without changing any state.
 
@@ -18,31 +37,14 @@ def duplicate_outcome_waits(db, *, replies_only=False):
     tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if not required <= tables:
         return {}
-    rows = db.execute("""
-        WITH outcomes AS (
-          SELECT child.id, child.status, child.received, child.user_id, child.chat_id, child.label,
-                 p.owner_id, p.turn_id, p.state, p.outcome, p.project,
-                 d.request_id AS dispatch_id, o.id AS reply_id
-          FROM appserver_project_routes p
-          JOIN request_context c ON c.event_id='project-outcome:' || p.route_id
-            AND c.source='project_outcome' AND c.actor=p.owner_id AND c.parent_request_id=p.request_id
-          JOIN requests child ON child.id=c.request_id
-          JOIN requests parent ON parent.id=p.request_id
-            AND parent.user_id=child.user_id AND parent.chat_id=child.chat_id AND parent.label=child.label
-          JOIN users u ON u.user_id=child.user_id AND u.chat_id=child.chat_id AND u.label=child.label
-            AND u.added<=child.received AND u.added<=parent.received
+    rows = db.execute(ROUTED_OUTCOMES + """, candidates AS (
+          SELECT child.*, d.request_id AS dispatch_id, o.id AS reply_id FROM outcomes child
           LEFT JOIN appserver_dispatch d ON d.request_id=child.id
           LEFT JOIN outbox o ON o.id='result:' || child.id AND o.chat_id=child.chat_id
-          WHERE p.state IN ('completed','blocked') AND p.turn_id IS NOT NULL AND p.turn_id!=''
-            AND p.outcome IS NOT NULL AND p.outcome!=''
-            AND child.status IN ('pending','processing','done')
         )
         SELECT child.id, other.id AS representative_id
-        FROM outcomes child JOIN outcomes other ON other.id!=child.id
-          AND other.user_id=child.user_id AND other.chat_id=child.chat_id AND other.label=child.label
-          AND other.owner_id=child.owner_id AND other.turn_id=child.turn_id
-          AND other.state=child.state AND other.outcome=child.outcome AND other.project=child.project
-        WHERE child.status IN ('pending','processing')
+        FROM candidates child JOIN candidates other USING (user_id,chat_id,label,owner_id,turn_id,state,outcome,project)
+        WHERE child.id!=other.id AND child.status IN ('pending','processing')
           AND NOT EXISTS (SELECT 1 FROM outbox own WHERE own.id='result:' || child.id)
           AND ((? AND other.reply_id IS NOT NULL) OR
             (NOT ? AND child.status='pending' AND child.dispatch_id IS NULL AND (
@@ -61,31 +63,14 @@ def delivered_duplicates(db, *, resolved_request_id=None):
     tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if not required <= tables:
         return []
-    return db.execute("""
-        SELECT DISTINCT child.id AS request_id, parent.id AS parent_id,
+    return db.execute(ROUTED_OUTCOMES + """
+        SELECT DISTINCT child.id AS request_id, child.parent_id,
                delivered.id AS delivered_request_id, COALESCE(receipt.telegram_id,0) AS telegram_id
-        FROM appserver_project_routes p
-        JOIN request_context c ON c.event_id='project-outcome:' || p.route_id
-          AND c.source='project_outcome' AND c.actor=p.owner_id
-          AND c.parent_request_id=p.request_id
-        JOIN requests child ON child.id=c.request_id
-        JOIN requests parent ON parent.id=p.request_id
-          AND parent.user_id=child.user_id AND parent.chat_id=child.chat_id
-        JOIN users u ON u.user_id=child.user_id AND u.chat_id=child.chat_id AND u.label=child.label
-        JOIN appserver_project_routes other ON other.owner_id=p.owner_id
-          AND other.turn_id=p.turn_id AND other.state=p.state AND other.outcome=p.outcome
-          AND other.route_id!=p.route_id
-        JOIN request_context sent ON sent.event_id='project-outcome:' || other.route_id
-          AND sent.source='project_outcome' AND sent.actor=other.owner_id
-          AND sent.parent_request_id=other.request_id
-        JOIN requests delivered ON delivered.id=sent.request_id
-          AND delivered.user_id=child.user_id AND delivered.chat_id=child.chat_id
-          AND delivered.label=child.label
+        FROM outcomes child JOIN outcomes delivered USING (user_id,chat_id,label,owner_id,turn_id,state,outcome,project)
         JOIN outbox receipt ON receipt.id='result:' || delivered.id
           AND receipt.chat_id=child.chat_id AND ((receipt.status='sent'
-          AND receipt.telegram_id IS NOT NULL) OR receipt.status='suppressed')
-        WHERE p.state IN ('completed','blocked') AND p.turn_id IS NOT NULL
-          AND p.turn_id!='' AND p.outcome IS NOT NULL AND p.outcome!=''
+          AND receipt.telegram_id>0) OR receipt.status='suppressed')
+        WHERE child.id!=delivered.id AND delivered.status='done'
           AND (child.status IN ('pending','processing') OR (child.id=? AND child.status='done'))
           AND (? IS NULL OR child.id=?)
           AND NOT EXISTS (SELECT 1 FROM outbox own WHERE own.id='result:' || child.id)
@@ -106,25 +91,44 @@ def confirmed_outcome_resolution(db, request_id):
     return None
 
 
-def delivered_owner_reply_ids(db, request_id):
-    """Read final receipts for this exact parent's accepted owner routes only."""
+def parent_outcome_requests(db, request_id, *, include_manual_routes=False):
+    """Find evidence bound to the parent, its original enrollment and its owner or coordinator."""
     required = {"request_context", "appserver_project_routes", "outbox", "users", "requests"}
-    if not required <= {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not required <= tables:
         return []
-    children = db.execute("""
-        SELECT child.id, child.chat_id FROM requests parent
-        JOIN request_context origin ON origin.request_id=parent.id AND origin.source!='project_outcome'
-        JOIN appserver_project_routes p ON p.request_id=parent.id AND p.state IN ('completed','blocked')
-        JOIN request_context c ON c.event_id='project-outcome:'||p.route_id
-          AND c.source='project_outcome' AND c.actor=p.owner_id AND c.parent_request_id=parent.id
-        JOIN requests child ON child.id=c.request_id AND child.status='done'
+    children = """
+        SELECT child.id, child.chat_id, child.status, c.event_id, c.actor FROM requests parent
+        LEFT JOIN request_context origin ON origin.request_id=parent.id
+        JOIN request_context c ON c.parent_request_id=parent.id AND c.source='project_outcome'
+        JOIN requests child ON child.id=c.request_id AND child.status IN ('pending','processing','done')
           AND child.user_id=parent.user_id AND child.chat_id=parent.chat_id AND child.label=parent.label
         JOIN users u ON u.user_id=parent.user_id AND u.chat_id=parent.chat_id AND u.label=parent.label
           AND u.added<=parent.received AND u.added<=child.received
         WHERE parent.id=? AND parent.status='done'
-    """, (request_id,)).fetchall()
+    """
+    rows = db.execute(children + """
+        AND COALESCE(origin.source,'native_user')!='project_outcome'
+        AND EXISTS (SELECT 1 FROM appserver_project_routes p WHERE p.request_id=parent.id AND p.owner_id=c.actor
+            AND p.state IN ('accepted','completed','blocked')
+            AND (? OR (p.state IN ('completed','blocked') AND c.event_id='project-outcome:'||p.route_id)))
+    """, (request_id, include_manual_routes)).fetchall()
+    if "appserver_dispatch" in tables:
+        rows.extend(db.execute(children + """
+            AND COALESCE(origin.source,'native_user')='native_user'
+            AND EXISTS (SELECT 1 FROM appserver_dispatch d WHERE d.request_id=parent.id
+                AND d.state IN ('accepted','reconciled') AND c.actor='codex:'||d.thread_id)
+        """, (request_id,)))
+    return rows
+
+
+def delivered_owner_reply_ids(db, request_id, *, require_delivery=True):
+    """Return one unambiguous outcome reply. A host reader can inspect a saved answer before delivery."""
     replies = set()
+    children = parent_outcome_requests(db, request_id)
     for child in children:
+        if child["status"] != "done":
+            return []
         resolution = confirmed_outcome_resolution(db, child["id"])
         key = "result:" + (resolution["delivered_request_id"] if resolution else child["id"])
         replies.add((key, child["chat_id"]))
@@ -132,9 +136,16 @@ def delivered_owner_reply_ids(db, request_id):
     # Collapse only duplicates with a matching, confirmed delivery proof.
     if len(replies) != 1:
         return []
+    # A second owner may still owe its first outcome.
+    covered = {(child["event_id"], child["actor"]) for child in children}
+    routes = db.execute("""SELECT 'project-outcome:'||route_id,owner_id FROM appserver_project_routes
+                        WHERE request_id=? AND state!='rejected_unauthorized_request'""", (request_id,))
+    if any(tuple(route) not in covered for route in routes):
+        return []
     key, chat_id = replies.pop()
-    if db.execute("SELECT 1 FROM outbox WHERE id=? AND chat_id=? AND ((status='sent' AND telegram_id>0) OR status='suppressed')",
-                  (key, chat_id)).fetchone():
+    if db.execute("""SELECT 1 FROM outbox WHERE id=? AND chat_id=?
+                  AND (? OR (status='sent' AND telegram_id>0) OR status='suppressed')""",
+                  (key, chat_id, not require_delivery)).fetchone():
         return [key]
     return []
 

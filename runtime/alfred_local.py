@@ -16,7 +16,7 @@ import stat
 import time
 
 from history_safety import redact
-from operator_policy import OWNER_LABEL
+from operator_policy import OWNER_LABEL, allows_project
 from telegram_bridge import BridgeError, Inbox, ROOT
 
 
@@ -40,13 +40,20 @@ def ensure_context(inbox):
 
 def current_sender(db, request_id, *, completed_schedule_reply=False):
     """Return the original, still-enrolled sender; paired entries also need a live grant."""
-    row = db.execute("""SELECT r.label FROM requests r JOIN users u
+    row = db.execute("""SELECT u.label,u.user_id,u.chat_id,u.added FROM requests r JOIN users u
         ON u.user_id=r.user_id AND u.chat_id=r.chat_id AND u.label=r.label
         WHERE r.id=? AND u.added<=r.received""", (request_id,)).fetchone()
     if row is None:
         return None
     if db.execute("SELECT 1 FROM sqlite_master WHERE name='request_context' AND type='table'").fetchone():
-        context = db.execute("SELECT event_id,source FROM request_context WHERE request_id=?", (request_id,)).fetchone()
+        context = db.execute("SELECT event_id,source,parent_request_id FROM request_context WHERE request_id=?", (request_id,)).fetchone()
+        if context and context["source"] == "project_outcome" and context["parent_request_id"]:
+            # Older collectors could save a late outcome under a replacement enrollment.
+            parent = db.execute("""SELECT 1 FROM requests WHERE id=? AND user_id=? AND chat_id=? AND label=?
+                                AND received>=?""", (context["parent_request_id"], row["user_id"], row["chat_id"],
+                                                     row["label"], row["added"])).fetchone()
+            if parent is None:
+                return None
         if context and context["source"] == "scheduled_task":
             from alfred_tasks import request_allowed
             from operator_policy import WORKSPACE
@@ -62,25 +69,27 @@ def current_sender(db, request_id, *, completed_schedule_reply=False):
     return row["label"]
 
 
-def chief_specialist(inbox, actor, parent_request_id):
-    """A one-shot specialist launched by the existing Chief returns evidence as that Chief.
-
-    It is bound to an enrolled human request the configured coordinator actually
-    accepted. It is never a project owner and carries no user or release authority.
-    """
+def authorize_outcome(inbox, actor, parent_request_id, label, routed_project):
+    """Bind coordinator evidence to an accepted human request, or check the existing project owner."""
     from alfred_appserver import load_config
+    from alfred_projects import registered_owners
     config = load_config(inbox.root)
-    if not config or actor != "codex:" + config["thread_id"] or not parent_request_id:
-        return False
-    if not inbox.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='appserver_dispatch'").fetchone():
-        return False
-    accepted = inbox.db.execute("""SELECT 1 FROM appserver_dispatch d LEFT JOIN request_context c ON c.request_id=d.request_id
-        WHERE d.request_id=? AND d.thread_id=? AND d.state IN ('accepted','reconciled')
-        AND COALESCE(c.source,'native_user')='native_user'""", (parent_request_id, config["thread_id"])).fetchone()
-    return accepted is not None and current_sender(inbox.db, parent_request_id) is not None
+    if config and actor == "codex:" + config["thread_id"]:
+        if parent_request_id and inbox.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='appserver_dispatch'").fetchone():
+            accepted = inbox.db.execute("""SELECT 1 FROM appserver_dispatch d LEFT JOIN request_context c ON c.request_id=d.request_id
+                WHERE d.request_id=? AND d.thread_id=? AND d.state IN ('accepted','reconciled')
+                AND COALESCE(c.source,'native_user')='native_user'""", (parent_request_id, config["thread_id"])).fetchone()
+            if accepted and routed_project is None:
+                return
+        raise BridgeError("A specialist result requires a human request accepted by this coordinator")
+    owner = registered_owners().get(actor)
+    if owner is None:
+        raise BridgeError("Project outcome actor must be a currently registered owner")
+    if routed_project is not None and (owner["project"] != routed_project or not allows_project(label, routed_project)):
+        raise BridgeError("The original project grant or registered owner changed")
 
 
-def submit(inbox, event_id, body, source="native_user", actor=None, parent_request_id=None, *, complete_route=None):
+def submit(inbox, event_id, body, source="native_user", actor=None, parent_request_id=None, *, complete_route=None, routed_project=None):
     private_root(inbox.root)
     ensure_context(inbox)
     if (not isinstance(event_id, str) or not 1 <= len(event_id) <= 200 or not isinstance(body, str)
@@ -94,28 +103,32 @@ def submit(inbox, event_id, body, source="native_user", actor=None, parent_reque
     if source == "native_user":
         actor = OWNER_LABEL
         parent_request_id = None
-    else:
-        from alfred_projects import registered_owners
-        if actor not in registered_owners() and not chief_specialist(inbox, actor, parent_request_id):
-            raise BridgeError("Project outcome actor must be a currently registered owner")
-    if parent_request_id:
-        recipient = inbox.db.execute("SELECT u.* FROM requests r JOIN users u ON u.user_id=r.user_id "
-                                     "AND u.chat_id=r.chat_id AND u.label=r.label WHERE r.id=?", (parent_request_id,)).fetchone()
-    else:
-        recipient = inbox.db.execute("SELECT * FROM users WHERE label=?", (OWNER_LABEL,)).fetchone()
-    if recipient is None:
-        raise BridgeError("The intended enrolled recipient is unavailable")
-    existing = inbox.db.execute("SELECT c.*,r.body,r.user_id FROM request_context c JOIN requests r ON r.id=c.request_id WHERE c.event_id=?",
-                                (event_id,)).fetchone()
-    if existing:
-        if (existing["body"] != clean or existing["source"] != source or existing["actor"] != actor
-                or existing["parent_request_id"] != parent_request_id or existing["user_id"] != recipient["user_id"]):
-            raise BridgeError("Local event ID conflicts with an earlier submission")
-        return existing["request_id"]
     digest = hashlib.sha256(event_id.encode()).hexdigest()
     request_id = "local:" + digest
     identifier = -(int(digest[:15], 16) + 1)
     with inbox.db:
+        # Two local callers can retry the same event while enrollment is changing.
+        inbox.db.execute("BEGIN IMMEDIATE")
+        if parent_request_id:
+            if current_sender(inbox.db, parent_request_id, completed_schedule_reply=True) is None:
+                raise BridgeError("The original request no longer has an authorized recipient")
+            recipient = inbox.db.execute("SELECT u.* FROM requests r JOIN users u ON u.user_id=r.user_id WHERE r.id=?",
+                                         (parent_request_id,)).fetchone()
+        else:
+            recipient = inbox.db.execute("SELECT * FROM users WHERE label=?", (OWNER_LABEL,)).fetchone()
+        if recipient is None:
+            raise BridgeError("The intended enrolled recipient is unavailable")
+        if source == "project_outcome":
+            authorize_outcome(inbox, actor, parent_request_id, recipient["label"], routed_project)
+        existing = inbox.db.execute("""SELECT c.*,r.body,r.user_id,r.chat_id,r.label,r.received FROM request_context c
+                                    LEFT JOIN requests r ON r.id=c.request_id WHERE c.event_id=?""", (event_id,)).fetchone()
+        if existing:
+            if (existing["body"] != clean or existing["source"] != source or existing["actor"] != actor
+                    or existing["parent_request_id"] != parent_request_id or existing["user_id"] != recipient["user_id"]
+                    or existing["chat_id"] != recipient["chat_id"] or existing["label"] != recipient["label"]
+                    or existing["received"] < recipient["added"]):
+                raise BridgeError("Local event ID conflicts with an earlier submission")
+            return existing["request_id"]
         if complete_route:
             # The early result becomes the route's only result. The adapter's
             # terminal path completes only accepted routes, so it cannot repeat it.
@@ -135,7 +148,7 @@ def submit_project_outcome(inbox, event):
     # Preserve the result. Concision belongs in the owner's writing, not slicing.
     suffix = "\nPrivate route ID: " + event["route_id"]
     return submit(inbox, event["event_id"], body + suffix,
-                  "project_outcome", event["owner_id"], event["request_id"])
+                  "project_outcome", event["owner_id"], event["request_id"], routed_project=event["project"])
 
 
 def handoff(inbox, route_id, owner_id, body):
@@ -162,7 +175,7 @@ def handoff(inbox, route_id, owner_id, body):
     text = ("Existing project owner resource handoff for " + route["project"] + " (completed).\n" + body
             + "\nPrivate route ID: " + route_id)
     return submit(inbox, "project-outcome:" + route_id, text, "project_outcome", owner_id, route["request_id"],
-                  complete_route={"route_id": route_id, "outcome": outcome})
+                  complete_route={"route_id": route_id, "outcome": outcome}, routed_project=route["project"])
 
 
 def wake(root):

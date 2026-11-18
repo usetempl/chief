@@ -112,7 +112,7 @@ async def rpc(ws, method, params):
 async def create_thread(workspace):
     from websockets.asyncio.client import unix_connect
     from alfred_appserver import DEFAULT_SOCKET, TELEGRAM_REPLY_TOOL, MAINTENANCE_NOTICE_TOOL, verified_socket_path
-    from alfred_projects import project_route_tool
+    from alfred_projects import PROJECT_ROUTE_TOOL
     directory = workspace / ".private"
     config = directory / "appserver.json"
     if config.exists():
@@ -124,18 +124,11 @@ async def create_thread(workspace):
         await rpc(ws, "initialize", {"clientInfo": {"name": "chief_of_shipping_setup", "version": (workspace / "VERSION").read_text().strip()},
                                      "capabilities": {"experimentalApi": True}})
         await ws.send(json.dumps({"method": "initialized", "params": {}}))
-        route = project_route_tool(workspace / "projects.md")
-        # The runtime verifies every requested owner against the current private board.
-        # The catalog must also permit owners accepted during later onboarding.
-        route["inputSchema"]["properties"]["owner_id"].pop("enum", None)
-        route["description"] = ("Send one concise brief to an existing owner registered in projects.md. "
-                                "Read that file for current owners. Preserve sender authority and release rules. "
-                                "Never create a replacement owner. A held owner keeps a pending brief.")
         private_write(marker, json.dumps({"cwd": str(workspace), "state": "creation_started"}) + "\n")
         try:
             result = await rpc(ws, "thread/start", {
                 "cwd": str(workspace), "ephemeral": False, "serviceTier": "default",
-                "dynamicTools": [TELEGRAM_REPLY_TOOL, route, MAINTENANCE_NOTICE_TOOL],
+                "dynamicTools": [TELEGRAM_REPLY_TOOL, PROJECT_ROUTE_TOOL, MAINTENANCE_NOTICE_TOOL],
             })
         except RpcRejected:
             marker.unlink()  # Definite rejection only; ambiguous failures remain held.

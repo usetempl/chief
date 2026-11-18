@@ -21,11 +21,11 @@ import threading
 import time
 import uuid
 
-from telegram_bridge import AUDIO_EXTENSIONS, BridgeError, Inbox, MAX_ATTACHMENT, PREFIX, reply_parts
+from telegram_bridge import AUDIO_EXTENSIONS, BridgeError, Inbox, MAX_ATTACHMENT, PREFIX, reply_parts, reply_text_units
 from alfred_local import current_sender, ensure_context, start_wake, submit_project_outcome
 from history_safety import redact
 from alfred_projects import ProjectRouter, TOOL_NAME as PROJECT_TOOL_NAME
-from alfred_outcomes import confirmed_outcome_resolution, duplicate_outcome_waits, reconcile_delivered_duplicates
+from alfred_outcomes import confirmed_outcome_resolution, duplicate_outcome_waits, parent_outcome_requests, reconcile_delivered_duplicates
 from alfred_audio import transcribe as transcribe_local, recording as audio_recording
 from operator_policy import OWNER_LABEL, OWNER_AUTHORITY, TURN_SETTINGS, CODEX_BIN, attribution
 
@@ -337,24 +337,31 @@ class Adapter:
         an existing answer or to resend a deduplicated owner outcome. Thread,
         turn and enrolled-recipient authorization are checked by tool_reply.
         """
-        context = self.db.execute("SELECT source FROM request_context WHERE request_id=?", (row["id"],)).fetchone()
-        if context and context["source"] == "project_outcome":
-            return []
-        children = self.db.execute("""
-            SELECT child.id FROM request_context c
-            JOIN requests child ON child.id=c.request_id
-              AND child.user_id=? AND child.chat_id=? AND child.label=? AND child.status='done'
-            JOIN appserver_project_routes p ON p.request_id=c.parent_request_id AND p.owner_id=c.actor
-              AND p.state IN ('accepted','completed','blocked')
-            WHERE c.parent_request_id=? AND c.source='project_outcome'
-        """, (row["user_id"], row["chat_id"], row["label"], row["id"])).fetchall()
         replies = []
-        for child in children:
-            receipt = self.db.execute("SELECT body FROM outbox WHERE id=? AND chat_id=? AND status IN ('sent','suppressed')", (
+        for child in parent_outcome_requests(self.db, row["id"], include_manual_routes=True):
+            if child["status"] != "done":
+                continue
+            receipt = self.db.execute("SELECT body FROM outbox WHERE id=? AND chat_id=? AND ((status='sent' AND telegram_id>0) OR status='suppressed')", (
                 "result:" + child["id"], row["chat_id"])).fetchone()
             if receipt:
                 replies.append(receipt["body"])
         return replies
+
+    def reply_turn_allowed(self, row, turn_id):
+        if row["turn_id"] == turn_id:
+            return True
+        if row["dispatch_error"] != "recovery_required:interrupted":
+            return False
+        # A later authenticated turn can finish the saved answer after a server
+        # interruption. Keep the original dispatch; never replay its work.
+        followups = self.db.execute("""SELECT r.id FROM requests r
+            JOIN appserver_dispatch d ON d.request_id=r.id
+            LEFT JOIN request_context c ON c.request_id=r.id
+            WHERE d.thread_id=? AND d.turn_id=? AND d.state IN ('accepted','reconciled')
+              AND r.user_id=? AND r.chat_id=? AND r.label=?
+              AND COALESCE(c.source,'native_user')='native_user'""",
+            (self.thread_id, turn_id, row["user_id"], row["chat_id"], row["label"])).fetchall()
+        return any(current_sender(self.db, followup["id"]) is not None for followup in followups)
 
     def tool_reply(self, params):
         args = params.get("arguments")
@@ -377,7 +384,10 @@ class Adapter:
             if not body.strip():
                 return self.tool_result(False, "A quiet completion needs the complete answer after DONT_NOTIFY; request remains open")
         try:
-            reply_parts("result:" + args["request_id"], PREFIX + body)
+            if quiet:
+                reply_text_units(body)
+            else:
+                reply_parts("result:" + args["request_id"], PREFIX + body)
         except BridgeError as error:
             return self.tool_result(False, str(error))
         _, counts = redact(body, conservative=False)
@@ -395,13 +405,13 @@ class Adapter:
                     return json.loads(previous["result"])
                 return self.tool_result(False, "Tool call ID conflicts with an earlier call")
             row = self.db.execute("""
-                SELECT r.*, d.turn_id, d.state FROM requests r
+                SELECT r.*, d.turn_id, d.state, d.error AS dispatch_error FROM requests r
                 JOIN appserver_dispatch d ON d.request_id=r.id
                 JOIN users u ON u.user_id=r.user_id AND u.chat_id=r.chat_id AND u.label=r.label
                 WHERE r.id=? AND d.thread_id=? AND u.added<=r.received
             """, (args["request_id"], self.thread_id)).fetchone()
             if (not row or row["state"] not in {"accepted", "reconciled"}
-                    or row["turn_id"] != params["turnId"]):
+                    or not self.reply_turn_allowed(row, params["turnId"])):
                 return self.tool_result(False, "Request is not authorized for this thread and turn")
             if quiet and row["label"] != OWNER_LABEL:
                 return self.tool_result(False, "Quiet completion is only for the installation owner; send a normal reply")

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.2 — 2026-11-18
+
+- Concurrent host submissions with the same event ID and content return one request ID. A new enrollment cannot reuse an earlier enrollment's event or read its answer.
+- The original host request ID returns a single matching owner or specialist answer as soon as Chief saves it. The reader reports queued, uncertain and quiet delivery separately. Multiple distinct outcomes need a combined answer from Chief.
+- Quiet answers can contain local Markdown image references. Telegram photo validation applies when Chief requests a send.
+- A retired owner or changed project grant can hold one finished result. Chief records the reason and continues with other requests. Reconnect uses the saved route and checks the original enrollment. Equivalent outcomes share a receipt only within the same enrollment and project.
+- New coordinators look up owners in the current project registry. Direct requests still work when the registry file is missing.
+- After a server interruption, a later authenticated turn from the same enrolled sender can complete the original saved request without replaying its work. Other turns and approval or tool failures remain blocked.
+
 ## 0.5.1 — 2026-11-17
 
 - The bridge sets a 👍 reaction on each saved message or bridge command from the enrolled installation owner, using Telegram's `setMessageReaction`. It is a receipt, not completion, and uses no model.

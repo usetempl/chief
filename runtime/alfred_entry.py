@@ -11,7 +11,7 @@ import sqlite3
 import stat
 import time
 
-from alfred_local import private_root
+from alfred_local import current_sender, private_root
 from history_safety import redact
 from operator_policy import OWNER_LABEL
 from telegram_bridge import BridgeError, ROOT
@@ -52,14 +52,14 @@ def result(request_id, root=ROOT):
         row = db.execute("""
             SELECT r.status, r.chat_id, c.event_id FROM requests r
             JOIN request_context c ON c.request_id=r.id
-            JOIN users u ON u.user_id=r.user_id AND u.chat_id=r.chat_id AND u.label=r.label
             WHERE r.id=? AND r.label=? AND c.source='native_user'
               AND c.actor=? AND c.parent_request_id IS NULL
               AND (SELECT count(*) FROM users WHERE label=?)=1
         """, (request_id, OWNER_LABEL, OWNER_LABEL, OWNER_LABEL)).fetchone()
         if (row is None or not isinstance(row["event_id"], str)
                 or not 1 <= len(row["event_id"]) <= 200
-                or request_id != "local:" + hashlib.sha256(row["event_id"].encode()).hexdigest()):
+                or request_id != "local:" + hashlib.sha256(row["event_id"].encode()).hexdigest()
+                or current_sender(db, request_id) is None):
             return {"request_id": request_id, "status": "not_found_or_not_allowed"}
 
         output = {
@@ -75,19 +75,18 @@ def result(request_id, root=ROOT):
                 states = {"sending", "accepted", "reconciled", "rejected", "uncertain"}
                 output["dispatch_state"] = dispatch["state"] if dispatch["state"] in states else "unknown"
 
-        answer = db.execute("""
+        select_answer = """
             SELECT status, telegram_id, length(body) AS size, body,
                    instr(body,char(0)) AS nul_position
             FROM outbox WHERE id=? AND chat_id=?
-        """, ("result:" + request_id, row["chat_id"])).fetchone()
+        """
+        answer = db.execute(select_answer, ("result:" + request_id, row["chat_id"])).fetchone()
         if not answer and row["status"] == "done":
             from alfred_outcomes import delivered_owner_reply_ids
-            replies = delivered_owner_reply_ids(db, request_id)
+            replies = delivered_owner_reply_ids(db, request_id, require_delivery=False)
             # Multiple distinct outcomes need an aggregate answer, not an arbitrary choice.
             if len(replies) == 1:
-                answer = db.execute("""SELECT status,telegram_id,length(body) AS size,
-                    body,instr(body,char(0)) AS nul_position
-                    FROM outbox WHERE id=? AND chat_id=?""", (replies[0], row["chat_id"])).fetchone()
+                answer = db.execute(select_answer, (replies[0], row["chat_id"])).fetchone()
                 output["answer_source_request_id"] = replies[0].removeprefix("result:")
         if answer:
             state = answer["status"]
@@ -141,7 +140,7 @@ def outcome_receipt(request_id, owner_id, root=ROOT):
             route = routed is None or db.execute(
                 "SELECT 1 FROM appserver_project_routes WHERE route_id=? AND owner_id=? AND request_id=?",
                 (routed[1], owner_id, row["parent_request_id"])).fetchone()
-            if parent is None or not route:
+            if parent is None or not route or current_sender(db, row["parent_request_id"], completed_schedule_reply=True) is None:
                 return denied
         elif routed:
             return denied
