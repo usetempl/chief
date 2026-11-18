@@ -410,11 +410,50 @@ class Inbox:
         return self.db.execute("INSERT OR IGNORE INTO outbox(id,chat_id,body,status,created) VALUES (?,?,?,'suppressed',?)",
                                (key, chat, PREFIX + text, time.time())).rowcount
 
-    def reply(self, key, chat, text):
+    def owner_recording(self, chat, message_id, request_id=None):
+        """True for the enrolled owner's own Telegram voice/audio message, saved after enrollment."""
+        if type(chat) is not int or type(message_id) is not int or message_id <= 0:
+            return False
+        source = "tg:" + str(chat) + ":" + str(message_id)
+        context = ("AND NOT EXISTS (SELECT 1 FROM request_context c WHERE c.request_id=r.id)"
+                   if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='request_context'").fetchone() else "")
+        return self.db.execute("""SELECT 1 FROM requests r JOIN users u
+            ON u.user_id=r.user_id AND u.chat_id=r.chat_id AND u.label=r.label
+            JOIN attachments a ON a.request_id=r.id AND a.kind IN ('voice','audio')
+            WHERE r.chat_id=? AND r.message_id=? AND r.user_id=r.chat_id AND r.label=?
+            AND u.added<=r.received AND (r.id=? OR r.id LIKE ?)
+            AND (? IS NULL OR r.id=?) """ + context + " LIMIT 1",
+            (chat, message_id, OWNER_LABEL, source, source + ":edit:%", request_id, request_id)).fetchone() is not None
+
+    def transcript(self, request_id, text):
+        """Queue an on-device transcript as a literal reply to the owner's own recording.
+
+        Called in the transaction that saves a fresh decode. It is not the answer and
+        never completes the request. One per Telegram message, including edits.
+        """
+        row = self.db.execute("SELECT chat_id,message_id FROM requests WHERE id=?", (request_id,)).fetchone()
+        if not row or not isinstance(text, str) or not self.owner_recording(row["chat_id"], row["message_id"], request_id):
+            return False
+        key = "transcript:tg:" + str(row["chat_id"]) + ":" + str(row["message_id"])
+        if self.db.execute("SELECT 1 FROM outbox WHERE id=?", (key,)).fetchone():
+            return False
+        try:
+            self.reply(key, row["chat_id"], text, reply_to=row["message_id"])
+        except BridgeError:
+            return False  # Unsendable text: no transcript claim; the normal answer is unaffected.
+        return True
+
+    def reply(self, key, chat, text, reply_to=None):
         parts = reply_parts(key, PREFIX + text)
         if self.db.execute("SELECT 1 FROM outbox WHERE id=?", (key,)).fetchone():
             return
-        plan = delivery_plan(PREFIX + text, text_parts, photo_reply(key, PREFIX + text))
+        if reply_to is not None:
+            # Literal text, never Markdown-rendered; every part replies to that exact message.
+            plan = [{"method": "sendMessage", "payload": {"text": part, "reply_parameters": {"message_id": reply_to},
+                                                          "link_preview_options": {"is_disabled": True}}}
+                    for part in text_parts(PREFIX + text)]
+        else:
+            plan = delivery_plan(PREFIX + text, text_parts, photo_reply(key, PREFIX + text))
         if plan:
             if plan[0]["method"] == "sendMessage":
                 payload = plan[0]["payload"]
@@ -712,12 +751,13 @@ class Inbox:
                 allowed = self.db.execute("""SELECT label FROM users WHERE user_id=chat_id
                     AND chat_id=? AND added<=? AND label IN (?,?)""",
                     (row["chat_id"], row["created"], OWNER_LABEL, CONTACT_LABEL)).fetchone()
+                wire = plan[index] if plan else None
                 if (not allowed or row["id"].startswith("access-help:")
-                        or (row["id"].startswith("result:maintenance:") and allowed["label"] != OWNER_LABEL)):
+                        or (row["id"].startswith("result:maintenance:") and allowed["label"] != OWNER_LABEL)
+                        or (row["id"].startswith("transcript:") and not self.transcript_allowed(row, wire))):
                     with self.db:
                         self.db.execute("UPDATE outbox SET status='failed' WHERE id=? AND status='pending'", (row["id"],))
                     break
-                wire = plan[index] if plan else None
                 photo = (wire["payload"] if wire and wire["method"] == "sendPhoto" else
                          None if wire else photo_reply(row["id"], part["body"]))
                 payload = (wire["payload"] if wire else photo if photo else
@@ -772,6 +812,14 @@ class Inbox:
             from alfred_outcomes import reconcile_delivered_duplicates
             reconcile_delivered_duplicates(self.db)
         self.flush_receipts(api)
+
+    def transcript_allowed(self, row, wire):
+        """Recheck a transcript's owner, sender, source message and literal plan before a send."""
+        if not wire or wire["method"] != "sendMessage" or wire["payload"].get("entities"):
+            return False
+        target = (wire["payload"].get("reply_parameters") or {}).get("message_id")
+        return (row["id"] == "transcript:tg:" + str(row["chat_id"]) + ":" + str(target)
+                and self.owner_recording(row["chat_id"], target))
 
     def flush_receipts(self, api, limit=20):
         """Best-effort owner receipts. Errors never touch requests, replies or dispatch.

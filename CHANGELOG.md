@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0 — 2026-11-18
+
+- When the optional on-device decoder transcribes the enrolled installation owner's voice note or audio, the bridge immediately queues the transcript as plain text replying to that exact Telegram message, before Chief's model work. Text is sent as decoded: same language and punctuation, literal Markdown, ordered parts for long transcripts.
+- The transcript is not the answer and never completes the request; Chief's answer and any correction are normal replies. A failed or refused transcript send does not hold other replies.
+- Enrollment, same sender, owner's own private message and target are rechecked before every send. One transcript per Telegram message, including redelivery and edits. Rate limits and connection failures retry; uncertain sends are not replayed.
+- Contacts, failed or interrupted decodes and native-audio input get no transcript reply. Transcripts saved earlier are not sent.
+
+Migration: none. Restart the one collector at a safe boundary to start sending transcript replies; no configuration, model or decoder change.
+
 ## 0.5.2 — 2026-11-18
 
 - Concurrent host submissions with the same event ID and content return one request ID. A new enrollment cannot reuse an earlier enrollment's event or read its answer.

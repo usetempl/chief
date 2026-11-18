@@ -690,6 +690,10 @@ class Adapter:
             raise
         with self.db:
             self.db.execute("UPDATE appserver_audio SET result=? WHERE request_id=?", (json.dumps(result), row["id"]))
+            # Only a fresh, successful decode is echoed, before dispatch; cached results never are.
+            echoed = result.get("status") == "transcribed" and self.inbox.transcript(row["id"], result.get("text"))
+        if echoed and self.outbox_signal:
+            self.outbox_signal()
 
     async def refresh_active(self):
         result = await self.rpc("thread/turns/list", {

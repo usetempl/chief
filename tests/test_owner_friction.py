@@ -709,6 +709,177 @@ class OwnerReceipts(Base):
         self.assertEqual(self.rows(), [(OWNER, 70, "sent")])
 
 
+
+class TranscriptAPI:
+    """Replies get valid receipts unless a scripted outcome is an error; reactions succeed."""
+    def __init__(self, *outcomes):
+        self.outcomes, self.calls = list(outcomes), []
+
+    def call(self, method, payload):
+        self.calls.append((method, payload))
+        if method == "setMessageReaction":
+            return True
+        assert method == "sendMessage", method
+        outcome = self.outcomes.pop(0) if self.outcomes else None
+        if isinstance(outcome, Exception):
+            raise outcome
+        return {"message_id": 900 + len(self.calls), "text": payload["text"], "chat": {"id": payload["chat_id"]}}
+
+    def sent(self):
+        return [payload for method, payload in self.calls if method == "sendMessage"]
+
+
+# Synthetic transcript: another language, punctuation and literal Markdown must arrive unchanged.
+SPOKEN = "Olá, Chief! Corrija o **checkout** — `pedido_77` _falha_ [aqui](http://x)… certo?"
+
+
+class OwnerTranscripts(Base):
+    def setUp(self):
+        super().setUp()
+        (self.root / "local-audio.json").write_text("{}")  # Presence only; the decoder is patched.
+        self.decoded = []
+
+    def decoder(self, text=SPOKEN, status="transcribed"):
+        def transcribe(root, request_id, attachment, cancel=None):
+            self.decoded.append(request_id)
+            if status != "transcribed":
+                return {"status": "unavailable", "reason": "local_decode_failed_or_unclear"}
+            data = Path(attachment["local_path"]).read_bytes()
+            return {"status": "transcribed", "text": text, "language": "pt", "engine": "whisper.cpp", "model": "m.bin",
+                    "audio_sha256": hashlib.sha256(data).hexdigest(), "duration_seconds": 3, "passes": 1, "untrusted": True}
+        return patch("alfred_appserver.transcribe_local", transcribe)
+
+    def voice(self, update_id, message_id, user=OWNER, edit_date=None):
+        update = message(update_id, user=user, text=None,
+                         voice={"file_id": "voice", "duration": 3, "file_size": 11, "mime_type": "audio/ogg"})
+        update["message"]["message_id"] = message_id
+        if edit_date:
+            update["edited_message"] = update.pop("message")
+            update["edited_message"]["edit_date"] = edit_date
+        self.inbox.ingest(update, Files(b"voice bytes"))
+
+    def transcripts(self):
+        return [tuple(row) for row in self.inbox.db.execute("SELECT id,status FROM outbox WHERE id LIKE 'transcript:%' ORDER BY id")]
+
+    async def test_fresh_transcript_is_committed_before_dispatch_and_sent_as_a_literal_reply(self):
+        seen = []
+        daemon = self.adapter.rpc
+        async def rpc(method, params):
+            if method == "turn/start":
+                other = sqlite3.connect(self.root / "inbox.sqlite")  # Durable before any model work.
+                seen.append(other.execute("SELECT body FROM outbox WHERE id='transcript:tg:43:70'").fetchone())
+                other.close()
+            return await daemon(method, params)
+        self.adapter.rpc = rpc
+        signals = []
+        self.adapter.outbox_signal = lambda: signals.append(1)
+        self.voice(5, 70)
+        with self.decoder():
+            await self.adapter.dispatch_pending()
+        self.assertEqual((seen, signals), ([(SPOKEN,)], [1]))
+        self.assertEqual(self.status("tg:43:70"), "processing")  # A transcript is not the answer.
+        api = TranscriptAPI()
+        self.inbox.flush(api)
+        self.assertEqual(api.sent(), [{"chat_id": OWNER, "text": SPOKEN, "reply_parameters": {"message_id": 70},
+                                       "link_preview_options": {"is_disabled": True}}])
+        self.assertEqual(self.transcripts(), [("transcript:tg:43:70", "sent")])
+        self.assertEqual(self.status("tg:43:70"), "processing")
+        # The normal answer, and any later correction, are ordinary replies.
+        self.assertEqual(self.reply("tg:43:70", "Fixed **checkout**.", "coordinator-turn-1", "call-1")[0], True)
+        self.inbox.flush(api)
+        answer = api.sent()[-1]
+        self.assertNotIn("reply_parameters", answer)
+        self.assertEqual(answer["text"], "Fixed checkout.")
+        self.assertEqual(len(api.sent()), 2)
+
+    async def test_long_transcript_is_ordered_parts_with_safe_retry_and_no_uncertain_replay(self):
+        spoken = "\n".join("Linha " + str(i) + " com **asteriscos** e `código` intactos." for i in range(400))
+        self.voice(5, 70)
+        with self.decoder(spoken):
+            await self.adapter.dispatch_pending()
+        api = TranscriptAPI(None, BridgeError("Telegram HTTP 429", 429, retry_after=5))
+        self.inbox.flush(api)
+        self.assertEqual(len(api.sent()), 2)
+        self.inbox.flush(api)
+        self.assertEqual(len(api.sent()), 2)  # Later parts wait for the backoff.
+        with patch("telegram_bridge.time.time", return_value=time.time() + 10):
+            self.inbox.flush(api)
+        sent = api.sent()
+        self.assertEqual(sent[1], sent[2])  # Only the rate-limited part is retried; part 1 is never repeated.
+        bodies = [payload["text"] for payload in sent[:1] + sent[2:]]
+        self.assertGreater(len(bodies), 1)
+        self.assertEqual("".join(body.partition("\n")[2] for body in bodies), spoken)
+        self.assertTrue(all(p["reply_parameters"] == {"message_id": 70} and "entities" not in p for p in sent))
+        self.assertEqual(self.transcripts(), [("transcript:tg:43:70", "sent")])
+        # An uncertain send stays uncertain: no replay to the owner.
+        self.voice(6, 71)
+        with self.decoder():
+            await self.adapter.dispatch_pending()
+        uncertain = TranscriptAPI(BridgeError("Telegram request failed; delivery may be uncertain"))
+        for _ in range(3):
+            with patch("telegram_bridge.time.time", return_value=time.time() + 3601):
+                self.inbox.flush(uncertain)
+        self.assertEqual(len(uncertain.sent()), 1)
+        self.assertIn(("transcript:tg:43:71", "uncertain"), self.transcripts())
+
+    async def test_redelivery_edits_and_saved_results_send_no_repeat_or_old_transcript(self):
+        # A transcript decoded before this feature stays where it is.
+        self.voice(4, 60)
+        with self.inbox.db:
+            self.inbox.db.execute("INSERT INTO appserver_audio VALUES (?,?)", ("tg:43:60", json.dumps({
+                "status": "transcribed", "text": "old", "audio_sha256": hashlib.sha256(b"voice bytes").hexdigest()})))
+        self.voice(5, 70)
+        self.voice(5, 70)
+        self.voice(6, 70)
+        with self.decoder():
+            await self.adapter.dispatch_pending()
+            self.voice(7, 70, edit_date=99)
+            await self.adapter.dispatch_pending()
+            await self.adapter.prepare_local_audio(self.inbox.db.execute("SELECT * FROM requests WHERE id='tg:43:70'").fetchone())
+        self.assertEqual(self.decoded, ["tg:43:70", "tg:43:70:edit:99"])
+        self.assertEqual(self.transcripts(), [("transcript:tg:43:70", "pending")])
+        api = TranscriptAPI()
+        self.inbox.flush(api)
+        self.inbox.flush(api)
+        self.assertEqual([p["reply_parameters"]["message_id"] for p in api.sent()], [70])
+
+    async def test_failed_decode_contacts_and_revoked_owner_get_no_transcript_and_answers_continue(self):
+        self.voice(5, 70)
+        with self.decoder(status="unavailable"):
+            await self.adapter.dispatch_pending()
+        if HAS_CONTACT:
+            self.voice(6, 71, user=CONTACT)
+        self.voice(7, 72)
+        with self.decoder():
+            await self.adapter.dispatch_pending()
+        self.assertEqual(self.transcripts(), [("transcript:tg:43:72", "pending")])
+        with self.inbox.db:
+            self.inbox.db.execute("UPDATE users SET added=? WHERE user_id=?", (time.time() + 60, OWNER))  # Re-enrolled later.
+        api = TranscriptAPI()
+        self.inbox.flush(api)
+        self.assertEqual((api.sent(), self.transcripts()), ([], [("transcript:tg:43:72", "failed")]))
+        with self.inbox.db:
+            self.inbox.db.execute("UPDATE users SET added=1 WHERE user_id=?", (OWNER,))
+        self.assertTrue(self.reply("tg:43:72", "Done.", "coordinator-turn-1", "call-1")[0])
+        self.inbox.flush(api)
+        self.assertEqual([p["text"] for p in api.sent()], ["Done."])
+
+    async def test_refused_transcript_does_not_hold_the_answer_and_a_changed_target_is_refused(self):
+        self.voice(5, 70)
+        self.voice(6, 71)
+        with self.decoder():
+            await self.adapter.dispatch_pending()
+        with self.inbox.db:
+            plan = json.loads(self.inbox.db.execute("SELECT delivery_plan FROM outbox WHERE id='transcript:tg:43:71'").fetchone()[0])
+            plan[0]["payload"]["reply_parameters"]["message_id"] = 5  # Not this owner's recording.
+            self.inbox.db.execute("UPDATE outbox SET delivery_plan=? WHERE id='transcript:tg:43:71'", (json.dumps(plan),))
+        self.assertTrue(self.reply("tg:43:70", "Answer one.", "coordinator-turn-1", "call-1")[0])
+        api = TranscriptAPI(BridgeError("Telegram HTTP 400", 400))  # For example, the voice note was deleted.
+        self.inbox.flush(api)
+        self.assertEqual([(p["text"], "reply_parameters" in p) for p in api.sent()], [(SPOKEN, True), ("Answer one.", False)])
+        self.assertEqual(self.transcripts(), [("transcript:tg:43:70", "failed"), ("transcript:tg:43:71", "failed")])
+        self.assertEqual(self.status("tg:43:71"), "processing")
+
 FAKE_FFMPEG = """#!/usr/bin/python3
 import sys, wave
 data = sys.stdin.buffer.read()
