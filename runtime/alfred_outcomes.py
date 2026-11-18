@@ -3,6 +3,7 @@
 This reconciles transport records. It never sends a message, repeats project
 work, or treats an answered blocker as a completed project.
 """
+import json
 import time
 
 
@@ -171,3 +172,16 @@ def reconcile_delivered_duplicates(db):
                        (row["parent_id"],))
             resolved.append(row["request_id"])
     return resolved
+
+
+def retain_direct_receipts(db, cutoff):
+    """Copy each expiring direct-return receipt, with its parts, into its durable binding."""
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='appserver_direct_returns'").fetchone():
+        return
+    for row in db.execute("""SELECT b.route_id, o.id, o.status, o.telegram_id FROM appserver_direct_returns b
+            JOIN outbox o ON o.id=b.outbox_id WHERE b.receipt IS NULL AND o.status IN ('sent','suppressed') AND o.created<?""",
+                          (cutoff,)).fetchall():
+        parts = [list(part) for part in db.execute(
+            "SELECT part_index,status,telegram_id FROM outbox_parts WHERE outbox_id=? ORDER BY part_index", (row["id"],))]
+        db.execute("UPDATE appserver_direct_returns SET receipt=? WHERE route_id=?", (json.dumps(
+            {"status": row["status"], "telegram_id": row["telegram_id"], "parts": parts}), row["route_id"]))

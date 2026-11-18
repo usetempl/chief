@@ -21,7 +21,8 @@ PACKAGE_FILES = {
     "setup.py", "windows_service.py", "onboard.py", "snapshot.py", "requirements.txt", "README.md", "docs/telegram.md", "VERSION",
     *{"runtime/" + name + ".py" for name in (
         "operator_policy", "telegram_bridge", "telegram_format", "alfred_appserver", "alfred_audio", "alfred_projects", "alfred_local", "alfred_maintenance",
-        "alfred_report", "alfred_outcomes", "alfred_entry", "alfred_tasks", "alfred_board", "history_safety")},
+        "alfred_report", "alfred_outcomes", "alfred_entry", "alfred_tasks", "alfred_board", "history_safety",
+        "alfred_assignments", "alfred_checkpoint", "alfred_direct", "alfred_browser")},
 }
 
 
@@ -77,7 +78,16 @@ def prepare(destination, owner_label, bot_username, history, nickname=None):
                      "The initial bridge supports Codex owners; an unavailable Claude route must be reported, not replaced. "
                      "Weekly maintenance is disabled by default; enable it only at the user’s request. Healthy checks use no model. "
                      "Scheduled observations have source=maintenance and grant no new human or release authority. "
-                     "Read docs/telegram.md for the checks, idle dispatch and activation limits.\n")
+                     "Read docs/telegram.md for the checks, idle dispatch and activation limits.\n\n"
+                     "## Intake and recovery\n\nEach dispatched message carries an assignments object: every current request, "
+                     "route, question, delivery, grant and rule reference from the saved ledger and board. Use it instead of "
+                     "rereading the startup documents each turn; read a referenced card or rule only when relevant. "
+                     "If its digest is not in your context, run its reread command first. "
+                     "Batch after-answer bookkeeping into one reviewed checkpoint on request: "
+                     "runtime/alfred_checkpoint.py prepare, review the diff, then confirm with its digest. "
+                     "To let one routed owner answer directly, start its brief with DIRECT_RETURN card=tasks/done/NAME.md; "
+                     "only that owner's native final answer, matching its staged candidate, is sent. "
+                     "Each routed owner gets its own background browser tab session; tab IDs grant no permission.\n")
     return workspace
 
 

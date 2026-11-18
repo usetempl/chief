@@ -1047,6 +1047,8 @@ def serve(inbox):
                     inbox.set_meta("health", "online")
                     cutoff = time.time() - 30 * 86400
                     inbox.expire_completed(cutoff)
+                    from alfred_outcomes import retain_direct_receipts
+                    retain_direct_receipts(inbox.db, cutoff)
                     inbox.db.execute("DELETE FROM outbox WHERE status IN ('sent','suppressed') AND created<?", (cutoff,))
                     inbox.db.execute("DELETE FROM outbox_parts WHERE NOT EXISTS (SELECT 1 FROM outbox o WHERE o.id=outbox_id)")
                     inbox.db.execute("DELETE FROM invites WHERE expires<?", (time.time(),))

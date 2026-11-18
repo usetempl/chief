@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.7.0 — 2026-11-18
+
+- **After-answer checkpoint.** New `alfred_checkpoint.py prepare`/`confirm`/`status` turns after-answer bookkeeping into one on-demand, reviewed checkpoint per batch.
+  - It reads delivery receipts once and runs the installation's own export and verification commands once, with no time limit. A failed command's complete output is kept owner-only.
+  - It saves the exact diff of the declared paths, staged in a private temporary index, under a digest.
+  - `confirm` commits exactly those bytes without touching the operator's index, other staged files or worktree.
+  - Pushing is fixed at review and pinned to the configured expected fetch and push URLs. Those URLs, the saved commit and the remote tip are checked again at confirm and in crash recovery. Only that commit is pushed, with no tags and no force, and only when the remote is at the reviewed HEAD.
+  - Non-durable deliveries, failed commands, fresh credential-like lines, conflicting staged work, changed bytes, a moved HEAD and changed remote URLs or branches stop the batch with the fact.
+  - Private scripts are referenced from owner-only `.private/checkpoint.json`, never copied. Known gaps are reported as evidence. No schedule.
+- **Assignment recovery at intake.** Each coordinator dispatch carries an `assignments` object derived from the ledger and board.
+  - Open requests, transcripts and unanswered owner results are included in full; live routes include their briefs. Non-durable deliveries, grants and digested references to the registry, priorities, instructions and relevant cards are also included.
+  - Inputs are checked against the current enrollment, device and grant; revoked ones keep only their reference.
+  - The full object follows a resume, an observed compaction, a failed dispatch or `alfred_assignments.py --cold`. Warm dispatches carry only changes or `unchanged`, plus a reread command as the deterministic fallback when compaction is not signaled. No truncation, ranking or new task state.
+- **Reduced initial context.** New workspaces get a short always-loaded `AGENTS.md`/`CLAUDE.md`. `COORDINATOR.md` is read during onboarding, then only when a rule is in question or its digest changes. The core and setup guides say the same.
+- **Direct owner return.** Chief can elect one routed owner to answer directly by starting the brief with `DIRECT_RETURN card=tasks/done/NAME.md` (optionally `quiet`).
+  - The owner stages its answer with `alfred_local.py return`, which never sends.
+  - The bridge sends only when the app-server reports that owner's routed turn completed with a final byte-identical to the candidate, including on reconnect reconciliation.
+  - It then checks again the recipient and enrollment, device and grant, a policy digest, the unchanged settled card, one owner, and no earlier, uncertain or duplicate send. The policy digest covers operator policy, registry and grants, and operating rules, with no credentials or recipient IDs.
+  - The answer goes through the existing outbox with per-part receipts; its binding survives outbox cleanup.
+  - Anything else reaches Chief once as the ordinary route result with the reason.
+- Each project owner gets a separate browser session name and can retain multiple tab IDs in the authorized profile. A tab binding records the origin and provider instance when available. Conflicts, changed origins, stale resets and owner reassignment are checked. Foreground coordination is needed only for actions that use native focus.
+- `alfred_telegram_reply` now reports a conflict instead of "queued" when another answer for the same request was saved first.
+- `tools/replay_direct_return.py` replays the direct-return path and its main failure cases against a synthetic app-server. It counts dispatched turns: Chief relay 3 (2 Chief, 1 owner), direct return 2 (1 Chief, 1 owner). These are dispatches, not model calls.
+
+Migration: no breaking change, configuration or new tool registration. `DIRECT_RETURN` works inside the existing frozen route schema.
+- Restart the one collector at a safe boundary to start sending the assignments object and tab sessions; the first dispatch after restart carries the full object.
+- Existing installations should shorten their always-loaded instructions to use the object instead of rereading the startup documents each turn (see docs/telegram.md).
+- To use checkpoints, optionally add `.private/checkpoint.json` pointing to existing private export and verification scripts; a remote needs `fetch_url` and `push_url`.
+
 ## 0.6.0 — 2026-11-18
 
 - When the optional on-device decoder transcribes the enrolled installation owner's voice note or audio, the bridge immediately queues the transcript as plain text replying to that exact Telegram message, before Chief's model work. Text is sent as decoded: same language and punctuation, literal Markdown, ordered parts for long transcripts.

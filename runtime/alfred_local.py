@@ -178,6 +178,47 @@ def handoff(inbox, route_id, owner_id, body):
                   complete_route={"route_id": route_id, "outcome": outcome}, routed_project=route["project"])
 
 
+def stage_return(inbox, route_id, owner_id, body, card, workspace=None):
+    """Stage an owner's candidate answer for a route Chief elected for direct return.
+
+    This never sends. Only the app-server's report of that owner's routed turn
+    completing with exactly this text can send it (see alfred_direct.settle).
+    """
+    import alfred_direct
+    from alfred_projects import registered_owners
+    from operator_policy import WORKSPACE
+    private_root(inbox.root)
+    ensure_context(inbox)
+    if not isinstance(route_id, str) or not route_id or not inbox.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='appserver_project_routes'").fetchone():
+        raise BridgeError("A current owner and its route ID are required")
+    try:
+        return alfred_direct.stage(inbox.db, route_id, owner_id, body, card, registered_owners(), Path(workspace or WORKSPACE))
+    except ValueError as error:
+        raise BridgeError(str(error)) from None
+
+
+def browser_tab(inbox, route_id, owner_id, action, profile=None, tab_id=None, reason=None, *, origin=None, slot="main", instance=None):
+    """Record this owner's tab for the project of its own open route. Grants no permission."""
+    import alfred_browser
+    from alfred_projects import registered_owners
+    private_root(inbox.root)
+    owner = registered_owners().get(owner_id)
+    if owner is None or not isinstance(route_id, str) or not inbox.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='appserver_project_routes'").fetchone():
+        raise BridgeError("A current owner and its route ID are required")
+    route = inbox.db.execute("SELECT * FROM appserver_project_routes WHERE route_id=? AND owner_id=? AND state='accepted'",
+                             (route_id, owner_id)).fetchone()
+    sender = current_sender(inbox.db, route["request_id"]) if route else None
+    if route is None or sender is None or owner["project"] != route["project"] or not allows_project(sender, route["project"]):
+        raise BridgeError("Only the owner's open route for its current project can record a tab")
+    try:
+        return alfred_browser.record(inbox.db, route["project"], owner_id, action, profile, tab_id, reason,
+                                     origin=origin, slot=slot, instance=instance)
+    except ValueError as error:
+        raise BridgeError(str(error)) from None
+
+
 def wake(root):
     root = private_root(root)
     path = root / "wake.sock"
@@ -302,7 +343,7 @@ def resolve(inbox, entries, authority_request_id, evidence_ref, *, dry_run=False
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("submit", "handoff", "release-owner", "wake", "resolve"))
+    parser.add_argument("command", choices=("submit", "handoff", "return", "browser-tab", "release-owner", "wake", "resolve"))
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--event-id")
     parser.add_argument("--body-file", type=Path)
@@ -310,6 +351,14 @@ def main():
     parser.add_argument("--owner-id")
     parser.add_argument("--parent-request-id")
     parser.add_argument("--route-id")
+    parser.add_argument("--card", help="The elected tasks/done card for a direct-return candidate")
+    parser.add_argument("--action", choices=("bind", "check", "reset", "show"), help="browser-tab: record, reset or read the owned tab")
+    parser.add_argument("--origin", help="Plain origin from the observed tab")
+    parser.add_argument("--slot", default="main", help="Project-local tab purpose")
+    parser.add_argument("--instance", help="Browser connection instance ID when exposed")
+    parser.add_argument("--profile", help="browser-tab: the browser profile name in use")
+    parser.add_argument("--tab-id", help="browser-tab: the native tab ID to bind")
+    parser.add_argument("--reason", help="browser-tab: why a tab is reset")
     parser.add_argument("--verified-native-writer-released", action="store_true")
     parser.add_argument("--mapping-file", type=Path, help="JSON list, or object with entries: request_id, category, evidence[, covered_by]")
     parser.add_argument("--authority-request-id")
@@ -336,6 +385,14 @@ def main():
                 raise BridgeError("A private handoff body file is required")
             request_id = handoff(inbox, args.route_id, args.owner_id, args.body_file.read_text())
             result = {"status": "saved", "request_id": request_id}
+        elif args.command == "return":
+            if not args.body_file:
+                raise BridgeError("A private final-answer file is required")
+            result = stage_return(inbox, args.route_id, args.owner_id, args.body_file.read_text(), args.card)
+        elif args.command == "browser-tab":
+            print(json.dumps(browser_tab(inbox, args.route_id, args.owner_id, args.action, args.profile, args.tab_id, args.reason,
+                                         origin=args.origin, slot=args.slot, instance=args.instance)))
+            return 0
         elif args.command == "release-owner":
             if not args.verified_native_writer_released:
                 raise BridgeError("Confirm the native owner writer was released before retrying its pending briefs")
@@ -351,7 +408,7 @@ def main():
                 result["status"] = "wake_unavailable"
         print(json.dumps(result))
     except (BridgeError, OSError, ValueError) as error:
-        detail = str(error) if isinstance(error, BridgeError) and args.command == "resolve" else None
+        detail = str(error) if isinstance(error, BridgeError) and args.command in {"resolve", "return", "browser-tab"} else None
         print(json.dumps({"error": detail or "Local submission rejected; verify private input, identity and endpoint"}))
         return 1
     finally:
