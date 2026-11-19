@@ -31,7 +31,7 @@ import alfred_projects
 from alfred_appserver import Adapter
 from alfred_audio import MAX_SECONDS, transcribe
 from alfred_entry import result, wait_result
-from alfred_local import resolve, submit
+from alfred_local import finish, match, resolve, submit
 from alfred_projects import TOOL_NAME as ROUTE_TOOL
 from alfred_report import report
 from alfred_tasks import due_tasks
@@ -65,6 +65,7 @@ class Daemon:
     """Answers the app-server methods a real dispatch, Steer and route use."""
     def __init__(self):
         self.active, self.turns, self.calls = None, 0, []
+        self.owner_turn = "owner-turn"  # The native turn any owner turn/start lands in.
 
     async def __call__(self, method, params):
         self.calls.append((method, params))
@@ -77,7 +78,7 @@ class Daemon:
             self.active = "coordinator-turn-" + str(self.turns)
             return {"turn": {"id": self.active}}
         if method == "turn/start":
-            return {"turn": {"id": "owner-turn"}}
+            return {"turn": {"id": self.owner_turn}}
         if method == "turn/steer":
             return {"turnId": self.active}
         if method == "model/list":
@@ -350,13 +351,21 @@ class OutcomeDelivery(Base):
         self.assertEqual(result(fresh, self.root)["status"], "found")
 
     async def test_duplicate_outcomes_only_share_a_receipt_within_one_enrollment(self):
-        for event in ("earlier", "current", "duplicate"):
+        # The owner must give a late assignment its own answer, even if that answer is identical.
+        for event, turn in (("earlier", "earlier-turn"), ("current", "current-turn"), ("duplicate", "current-turn")):
+            self.daemon.owner_turn = turn
             parent = submit(self.inbox, event, "Review the order.")
             await self.adapter.dispatch_pending()
             self.assertEqual(await self.route(parent, self.daemon.active, event), "accepted")
             self.adapter.router.notification({"method": "turn/completed", "params": {"threadId": PROJECT_OWNER, "turn": {
-                "id": "owner-turn", "status": "completed", "items": [{"type": "agentMessage", "text": "Order checked."}]}}})
+                "id": turn, "status": "completed", "items": [{"type": "agentMessage", "text": "Order checked."}]}}})
             await self.drain()
+            if event == "duplicate":
+                self.assertIsNone(self.inbox.db.execute("SELECT 1 FROM request_context WHERE parent_request_id=?", (parent,)).fetchone())
+                route_id = self.inbox.db.execute("SELECT route_id FROM appserver_project_routes WHERE request_id=?", (parent,)).fetchone()[0]
+                with self.assertRaisesRegex(BridgeError, "already belongs"):
+                    match(self.inbox, "codex:" + PROJECT_OWNER, turn, route_id)
+                finish(self.inbox, route_id, "codex:" + PROJECT_OWNER, "Order checked.")
             child = self.inbox.db.execute("SELECT request_id FROM request_context WHERE parent_request_id=?", (parent,)).fetchone()[0]
             await self.adapter.dispatch_pending()
             if event == "duplicate":

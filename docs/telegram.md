@@ -195,6 +195,28 @@ The actor must be this installation's configured coordinator, and the parent mus
 
 The coordinator can answer a message first and then route its follow-up to an existing owner in the same turn. Routing needs the exact accepted coordinator turn, the original still-enrolled sender and that sender's project grant; one brief per owner per request stays immutable. Requests from another turn, other or unknown requests, denied or revoked senders and re-enrolled identities are refused.
 
+### Several requests in one owner turn
+
+Different requests routed to the same busy owner can land in one native turn. A final answer then closes only the route it identifies. Start the final answer with `ROUTE_RESULT ROUTE-ID` on its own line. If the owner already has active work, the new brief includes a command for saving another answer. Use the ID for the assignment that answer completes.
+
+```
+COS_WORKSPACE="$PWD" .venv/bin/python runtime/alfred_local.py finish --route-id ROUTE-ID \
+  --owner-id codex:OWNER-THREAD-ID --body-file ANSWER.txt
+```
+
+A turn with one route needs no label. `finish` works only for a route whose turn carries another route, or whose turn ended without giving it the final, so it is never a progress channel.
+
+If several assignments reached a turn, an unlabelled final needs review even when only one assignment is still open. The same applies to a final that names several or unknown assignments. The bridge saves the complete final privately and keeps every route open. Chief gets one content-free notice per set of routes, bound to the installation owner. It lists the route and request IDs, and the assignments object carries a `turn:` item with a read command:
+
+```
+COS_WORKSPACE="$PWD" .venv/bin/python runtime/alfred_local.py match --owner-id codex:OWNER-THREAD-ID \
+  --turn-id TURN-ID [--route-id ROUTE-ID]
+```
+
+Without `--route-id` it prints the saved final and the turn's routes and sends nothing. With it, the final becomes that open route's ordinary result for its own requester. Chief decides which route it answers; repeating the match is idempotent. The owner finishes any other route, and Chief can route the notice to the owner to ask for that. After a shared turn fails, Chief gets one private notice. The assignments stay open for individual answers.
+
+Acknowledgments are recorded in socket order, and reconnect collects every acceptance before settling a turn. A route acknowledged after its turn was already settled never reuses that final. It stays open and Chief gets a new notice.
+
 ### Direct owner return
 
 Chief can let one routed owner answer a request without a relay turn. It opts in by starting the brief with `DIRECT_RETURN card=tasks/done/NAME.md` on its own first line, or `DIRECT_RETURN quiet card=...` where the installation owner's notification preference allows quiet completion. Only Chief's route call can opt in this way; owner text or metadata never does. The request must be an open human request with no reply or notice yet and no other owner route. The election records the original recipient and enrollment, plus a digest of the operator policy, the owner registry and grants, and `priorities.md`, `AGENTS.md` and `COORDINATOR.md`. The digest contains no credentials or recipient identifiers.
@@ -237,7 +259,7 @@ Every coordinator dispatch carries an `assignments` object built from the existi
 - direct returns not yet seen and deliveries that are not yet durable;
 - each sender's project grants.
 
-It also carries references with digests to the owner registry, `priorities.md`, the instructions, Doing/Blocked/Review cards and any card naming a current request or route. Each input is checked against the current enrollment, device and grant. A revoked one keeps its ID and `authorization: revoked`, but not its content. Nothing is truncated or ranked, and no new task state is kept.
+It also carries references with digests to the owner registry, any shared owner turn with an open route, `priorities.md`, the instructions, Doing/Blocked/Review cards and any card naming a current request or route. Each input is checked against the current enrollment, device and grant. A revoked one keeps its ID and `authorization: revoked`, but not its content. Nothing is truncated or ranked, and no new task state is kept.
 
 The full object is sent with the first dispatch after a resume, an observed compaction (`thread/compacted` or a `contextCompaction` item), a rejected or uncertain dispatch, or `--cold`. Later warm dispatches get only `changes` since `base_digest`, or `unchanged`; the dispatched request itself is the message body. Where the runtime does not signal compaction, the fallback is deterministic and uses no timer: each dispatch states its digest and a reread command, and the coordinator runs it when that digest is not in its context.
 
@@ -287,14 +309,14 @@ Run it again without `--dry-run` to apply. Only messages awaiting reconciliation
 
 ### Shared-resource handoffs and owner receipts
 
-A routed brief can ask an owner only to release, confirm or refuse a shared resource, such as native UI, a browser or a host. The route input gives the owner the exact command. When the answer is true, the owner writes it to an owner-only file and publishes it immediately:
+A routed brief can ask an owner only to release, confirm or refuse a shared resource, such as native UI, a browser or a host. Chief marks it by starting the brief with `RESOURCE_HANDOFF` on its own first line, inside the existing route tool, so running coordinators need no new registration. The brief's wording is never searched. Only a marked route's input gives the owner the exact command; ordinary routes keep the browser, brief, authority and direct-return controls without it. When the answer is true, the owner writes it to an owner-only file and publishes it immediately:
 
 ```
 COS_WORKSPACE="$PWD" .venv/bin/python runtime/alfred_local.py handoff --route-id ROUTE-ID \
   --owner-id codex:OWNER-THREAD-ID --body-file ANSWER.txt
 ```
 
-The answer reaches the coordinator at once as owner evidence for the route's original recipient. The owner can keep working on unrelated tasks privately. In the same transaction, the route is marked completed and delivered, so the owner's later terminal turn is not relayed again. The command requires a currently registered owner, its own route that is still awaiting a result, and a still-enrolled original sender. Repeating the same answer returns the same request. A different answer, a route that already returned its terminal result, or another owner is rejected. Commentary and progress are never treated as a handoff, and the command grants no authority.
+The answer reaches the coordinator at once as owner evidence for the route's original recipient. The owner can keep working on unrelated tasks privately. In the same transaction, the route is marked completed and delivered, so the owner's later terminal turn is not relayed again. The command requires a currently registered owner, its own marked route that is still awaiting a result, and a still-enrolled original sender. Routes saved before this marker existed keep the command their input already offered. Repeating the same answer returns the same request. A different answer, a route that already returned its terminal result, or another owner is rejected. Commentary and progress are never treated as a handoff, and the command grants no authority.
 
 An owner can read only delivery metadata for its own published outcome, never another record or any body text:
 

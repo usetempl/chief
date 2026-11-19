@@ -155,6 +155,21 @@ def capsule(db, root, workspace=WORKSPACE):
                 item["direct_return"] = {"card": elections[row["route_id"]]["card"], "quiet": bool(elections[row["route_id"]]["quiet"])}
             items["route:" + row["route_id"]] = item
             ledger_ids.update((row["route_id"], row["request_id"]))
+    if "appserver_project_turn_results" in present:
+        from alfred_projects import match_command
+        # A shared owner turn while any of its routes is open: a reference to the private final, never its text.
+        for row in db.execute("""SELECT t.* FROM (SELECT DISTINCT owner_id,turn_id FROM appserver_project_routes
+                WHERE state='accepted' AND turn_id IS NOT NULL) p
+                JOIN appserver_project_turn_results t USING(owner_id,turn_id) ORDER BY t.created,t.owner_id,t.turn_id"""):
+            still_open = [route[0] for route in db.execute("SELECT route_id FROM appserver_project_routes WHERE owner_id=? "
+                          "AND turn_id=? AND state='accepted' ORDER BY created,route_id", (row["owner_id"], row["turn_id"]))]
+            if not still_open:
+                continue
+            items["turn:" + row["owner_id"] + ":" + row["turn_id"]] = {
+                "kind": "owner_turn_result", "owner_id": row["owner_id"], "turn_id": row["turn_id"], "state": row["state"],
+                "attributed_route_id": row["route_id"], "routes": json.loads(row["routes"]), "open_routes": still_open,
+                "final_sha256": hashlib.sha256(row["body"].encode()).hexdigest(), "notice_saved": bool(row["notified"]),
+                "read": match_command(row["owner_id"], row["turn_id"])}
     if "appserver_direct_returns" in present:
         for row in db.execute("""SELECT b.*, o.status AS delivery FROM appserver_direct_returns b
                 LEFT JOIN outbox o ON o.id=b.outbox_id WHERE b.announced=0

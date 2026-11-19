@@ -89,7 +89,8 @@ def authorize_outcome(inbox, actor, parent_request_id, label, routed_project):
         raise BridgeError("The original project grant or registered owner changed")
 
 
-def submit(inbox, event_id, body, source="native_user", actor=None, parent_request_id=None, *, complete_route=None, routed_project=None):
+def submit(inbox, event_id, body, source="native_user", actor=None, parent_request_id=None, *, complete_route=None, routed_project=None,
+           also=None):
     private_root(inbox.root)
     ensure_context(inbox)
     if (not isinstance(event_id, str) or not 1 <= len(event_id) <= 200 or not isinstance(body, str)
@@ -137,6 +138,8 @@ def submit(inbox, event_id, body, source="native_user", actor=None, parent_reque
                 (complete_route["outcome"], time.time(), complete_route["route_id"], actor, parent_request_id)).rowcount
             if not changed:
                 raise BridgeError("Route is not awaiting this owner's result")
+        if also:
+            also(inbox.db)  # Same transaction: a refusal here keeps the route and saves nothing.
         inbox.db.execute("INSERT INTO requests(id,update_id,user_id,chat_id,message_id,label,body,received) VALUES (?,?,?,?,?,?,?,?)",
                          (request_id, identifier, recipient["user_id"], recipient["chat_id"], identifier, recipient["label"], clean, time.time()))
         inbox.db.execute("INSERT INTO request_context VALUES (?,?,?,?,?)", (request_id, source, actor, event_id, parent_request_id))
@@ -144,6 +147,10 @@ def submit(inbox, event_id, body, source="native_user", actor=None, parent_reque
 
 
 def submit_project_outcome(inbox, event):
+    if event.get("route_id") is None:
+        # A shared-turn notice: content-free, to Chief for the installation owner, bound to no requester.
+        return submit(inbox, event["event_id"], "Existing project owner turn for " + event["project"] + " needs matching.\n"
+                      + event["body"], "project_outcome", event["owner_id"])
     body = ("Existing project owner result for " + event["project"] + " (" + event["status"] + ").\n" + event["body"])
     # Preserve the result. Concision belongs in the owner's writing, not slicing.
     suffix = "\nPrivate route ID: " + event["route_id"]
@@ -151,12 +158,7 @@ def submit_project_outcome(inbox, event):
                   "project_outcome", event["owner_id"], event["request_id"], routed_project=event["project"])
 
 
-def handoff(inbox, route_id, owner_id, body):
-    """Publish an owner's explicit completed resource handoff as its route's result now.
-
-    For a brief that only asks to release or confirm a shared resource. The owner
-    may continue unrelated work privately; its later terminal turn is not relayed.
-    """
+def owned_route(inbox, route_id, owner_id):
     from alfred_projects import registered_owners
     private_root(inbox.root)
     ensure_context(inbox)
@@ -169,6 +171,23 @@ def handoff(inbox, route_id, owner_id, body):
                              (route_id, owner_id)).fetchone()
     if route is None or current_sender(inbox.db, route["request_id"]) is None:
         raise BridgeError("Route, owner or original sender is no longer authorized")
+    return route
+
+
+def turn_results(db):
+    return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='appserver_project_turn_results'").fetchone() is not None
+
+
+def handoff(inbox, route_id, owner_id, body):
+    """Publish an owner's explicit completed resource handoff as its route's result now.
+
+    Only for a route Chief marked RESOURCE_HANDOFF (or one saved before that marker,
+    whose input already offered this command). The owner may continue unrelated
+    work privately; its later terminal turn is not relayed.
+    """
+    route = owned_route(inbox, route_id, owner_id)
+    if "resource_handoff" in route.keys() and route["resource_handoff"] == 0:
+        raise BridgeError("Chief did not mark this route as a shared-resource handoff")
     if not isinstance(body, str) or not body.strip():
         raise BridgeError("A completed handoff answer is required")
     outcome, _ = redact(body, conservative=False)
@@ -176,6 +195,71 @@ def handoff(inbox, route_id, owner_id, body):
             + "\nPrivate route ID: " + route_id)
     return submit(inbox, "project-outcome:" + route_id, text, "project_outcome", owner_id, route["request_id"],
                   complete_route={"route_id": route_id, "outcome": outcome}, routed_project=route["project"])
+
+
+def finish(inbox, route_id, owner_id, body):
+    """Publish the owner's complete result for a route whose native turn carried another route.
+
+    Allowed while that shared turn runs or after it ended without attributing its
+    final to this route. A single-route turn cannot use it for progress.
+    """
+    route = owned_route(inbox, route_id, owner_id)
+    if not isinstance(body, str) or not body.strip():
+        raise BridgeError("A complete answer is required")
+    previous = inbox.db.execute("SELECT r.body FROM request_context c JOIN requests r ON r.id=c.request_id WHERE c.event_id=?",
+                                ("project-outcome:" + route_id,)).fetchone()
+    shared = route["turn_id"] and (inbox.db.execute(
+        "SELECT 1 FROM appserver_project_routes WHERE owner_id=? AND turn_id=? AND route_id<>?",
+        (owner_id, route["turn_id"], route_id)).fetchone() or turn_results(inbox.db) and inbox.db.execute(
+        "SELECT 1 FROM appserver_project_turn_results WHERE owner_id=? AND turn_id=?", (owner_id, route["turn_id"])).fetchone())
+    if previous is None and not shared:
+        raise BridgeError("Only a route that shares its owner turn with another route can be finished this way")
+    outcome, _ = redact(body, conservative=False)
+    text = ("Existing project owner result for " + route["project"] + " (completed).\n" + body
+            + "\nPrivate route ID: " + route_id)
+    return submit(inbox, "project-outcome:" + route_id, text, "project_outcome", owner_id, route["request_id"],
+                  complete_route={"route_id": route_id, "outcome": outcome}, routed_project=route["project"])
+
+
+def match(inbox, owner_id, turn_id, route_id=None):
+    """Show a saved shared-turn owner result, or make it the result of one of that turn's open routes.
+
+    For Chief's private reconciliation. Reading sends nothing. Matching relays the
+    complete final to Chief as that route's ordinary result, bound to its requester.
+    """
+    private_root(inbox.root)
+    ensure_context(inbox)
+    saved = inbox.db.execute("SELECT * FROM appserver_project_turn_results WHERE owner_id=? AND turn_id=?",
+                             (owner_id, turn_id)).fetchone() if turn_results(inbox.db) else None
+    if saved is None:
+        raise BridgeError("No saved result for this owner turn")
+    routes = inbox.db.execute("SELECT route_id,request_id,project,state FROM appserver_project_routes "
+                              "WHERE owner_id=? AND turn_id=? ORDER BY created,route_id", (owner_id, turn_id)).fetchall()
+    if route_id is None:
+        return {"status": saved["state"], "owner_id": owner_id, "turn_id": turn_id, "attributed_route_id": saved["route_id"],
+                "routes": [dict(row) for row in routes], "final": saved["body"]}
+    route = owned_route(inbox, route_id, owner_id)
+    if route["turn_id"] != turn_id:
+        raise BridgeError("The route is not part of this owner turn")
+    text = ("Existing project owner result for " + route["project"] + " (completed; matched by Chief from a shared owner turn).\n"
+            + saved["body"] + "\nPrivate route ID: " + route_id)
+    repeated = saved["state"] == "matched" and saved["route_id"] == route_id
+    if saved["state"] == "failed":
+        raise BridgeError("The turn ended without an individual answer. The owner can finish each open route.")
+    if not repeated and saved["state"] != "ambiguous":
+        raise BridgeError("The saved final already belongs to another assignment")
+    if not repeated and route["state"] != "accepted":
+        raise BridgeError("The route is not an open route of this owner turn")
+
+    def record(db):
+        updated = db.execute("UPDATE appserver_project_turn_results SET state='matched',route_id=?,updated=? "
+                             "WHERE owner_id=? AND turn_id=? AND state='ambiguous' AND route_id IS NULL",
+                             (route_id, time.time(), owner_id, turn_id)).rowcount
+        if not updated:
+            raise BridgeError("This owner turn result was already matched")
+    request_id = submit(inbox, "project-outcome:" + route_id, text, "project_outcome", owner_id, route["request_id"],
+                        complete_route={"route_id": route_id, "outcome": saved["body"]}, routed_project=route["project"], also=record)
+    return {"status": "matched", "route_id": route_id, "request_id": request_id}
 
 
 def stage_return(inbox, route_id, owner_id, body, card, workspace=None):
@@ -343,7 +427,8 @@ def resolve(inbox, entries, authority_request_id, evidence_ref, *, dry_run=False
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("submit", "handoff", "return", "browser-tab", "release-owner", "wake", "resolve"))
+    parser.add_argument("command", choices=("submit", "handoff", "finish", "match", "return", "browser-tab", "release-owner",
+                                            "wake", "resolve"))
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--event-id")
     parser.add_argument("--body-file", type=Path)
@@ -351,6 +436,7 @@ def main():
     parser.add_argument("--owner-id")
     parser.add_argument("--parent-request-id")
     parser.add_argument("--route-id")
+    parser.add_argument("--turn-id", help="match: the owner turn named in a shared-turn notice")
     parser.add_argument("--card", help="The elected tasks/done card for a direct-return candidate")
     parser.add_argument("--action", choices=("bind", "check", "reset", "show"), help="browser-tab: record, reset or read the owned tab")
     parser.add_argument("--origin", help="Plain origin from the observed tab")
@@ -385,6 +471,15 @@ def main():
                 raise BridgeError("A private handoff body file is required")
             request_id = handoff(inbox, args.route_id, args.owner_id, args.body_file.read_text())
             result = {"status": "saved", "request_id": request_id}
+        elif args.command == "finish":
+            if not args.body_file:
+                raise BridgeError("A private answer file is required")
+            result = {"status": "saved", "request_id": finish(inbox, args.route_id, args.owner_id, args.body_file.read_text())}
+        elif args.command == "match":
+            result = match(inbox, args.owner_id, args.turn_id, args.route_id)
+            if args.route_id is None:
+                print(json.dumps(result, ensure_ascii=False))
+                return 0
         elif args.command == "return":
             if not args.body_file:
                 raise BridgeError("A private final-answer file is required")
@@ -408,7 +503,8 @@ def main():
                 result["status"] = "wake_unavailable"
         print(json.dumps(result))
     except (BridgeError, OSError, ValueError) as error:
-        detail = str(error) if isinstance(error, BridgeError) and args.command in {"resolve", "return", "browser-tab"} else None
+        detail = (str(error) if isinstance(error, BridgeError)
+                  and args.command in {"resolve", "return", "browser-tab", "handoff", "finish", "match"} else None)
         print(json.dumps({"error": detail or "Local submission rejected; verify private input, identity and endpoint"}))
         return 1
     finally:

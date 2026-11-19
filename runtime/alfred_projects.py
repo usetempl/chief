@@ -50,10 +50,28 @@ def return_command(route_id, owner_id, card):
     return " ".join(shlex.quote(part) for part in (
         "env", "COS_WORKSPACE=" + str(WORKSPACE), sys.executable, str(LOCAL), "return",
         "--route-id", route_id, "--owner-id", owner_id, "--card", card, "--body-file", "ANSWER.txt"))
+
+
+def finish_command(route_id, owner_id):
+    """The owner's private command for a route that shares its native turn with another route."""
+    return " ".join(shlex.quote(part) for part in (
+        "env", "COS_WORKSPACE=" + str(WORKSPACE), sys.executable, str(LOCAL), "finish",
+        "--route-id", route_id, "--owner-id", owner_id, "--body-file", "ANSWER.txt"))
+
+
+def match_command(owner_id, turn_id):
+    """Chief's private command to read a shared-turn result; add --route-id to attribute it."""
+    return " ".join(shlex.quote(part) for part in (
+        "env", "COS_WORKSPACE=" + str(WORKSPACE), sys.executable, str(LOCAL), "match",
+        "--owner-id", owner_id, "--turn-id", turn_id))
 OWNER_PATTERN = r"(?:codex:[0-9a-f-]{36})|(?:claude:local_[0-9a-f-]{36})"
 IDENTITY = re.compile(r"`(" + OWNER_PATTERN + r")`")
 # Chief's explicit election inside the frozen brief schema. Never read from owner text.
 DIRECT = re.compile(r"DIRECT_RETURN(?P<quiet> quiet)? card=(?P<card>tasks/done/[A-Za-z0-9][A-Za-z0-9._-]*\.md)[ \t]*(?:\n|$)")
+# Chief's explicit shared-resource handoff, also inside the frozen schema. Task prose is never searched.
+RESOURCE = re.compile(r"RESOURCE_HANDOFF[ \t]*(?:\n|$)")
+# The owner's label for the one route a final answers when one native turn carries several.
+LABEL = re.compile(r"^[ \t]*ROUTE_RESULT[ \t]+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[ \t]*\r?$", re.M)
 
 
 
@@ -97,7 +115,8 @@ def project_route_tool(path=PROJECTS):
     return {
         "type": "function", "name": TOOL_NAME,
         "description": "Read projects.md to select the existing owner. Send one brief within the sender's authority and release rules. "
-                       "A busy owner keeps the pending brief. The owner returns a final outcome or a blocker.",
+                       "A busy owner keeps the pending brief. The owner returns a final outcome or a blocker. "
+                       "Start a brief that only asks to release, confirm or refuse a shared resource with RESOURCE_HANDOFF on its own line.",
         # No enum: app-server freezes dynamic tools at thread/start, so an enum would
         # hide owners added later. handle() validates against the live registry.
         "inputSchema": {"type": "object", "additionalProperties": False,
@@ -108,6 +127,14 @@ def project_route_tool(path=PROJECTS):
 
 
 PROJECT_ROUTE_TOOL = project_route_tool()
+
+
+def ensure_turn_results(db):
+    """One attribution per owner turn: the saved final, its route if identified, and the turn's routes."""
+    db.execute("""CREATE TABLE IF NOT EXISTS appserver_project_turn_results (
+        owner_id TEXT NOT NULL, turn_id TEXT NOT NULL, body TEXT NOT NULL, final_sha256 TEXT,
+        state TEXT NOT NULL, route_id TEXT, routes TEXT NOT NULL, notified INTEGER NOT NULL,
+        created REAL NOT NULL, updated REAL NOT NULL, PRIMARY KEY(owner_id,turn_id))""")
 
 
 def safe_text(text):
@@ -143,10 +170,15 @@ class ProjectRouter:
               owner_id TEXT NOT NULL, turn_id TEXT NOT NULL, candidate_final TEXT, terminal TEXT,
               PRIMARY KEY(owner_id,turn_id));
         """)
+        ensure_turn_results(self.db)
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(appserver_project_turn_events)")}
         if "final_sha256" not in columns:
             with self.db:
                 self.db.execute("ALTER TABLE appserver_project_turn_events ADD COLUMN final_sha256 TEXT")
+        if "resource_handoff" not in {row[1] for row in self.db.execute("PRAGMA table_info(appserver_project_routes)")}:
+            with self.db:
+                # NULL marks a route saved before the marker; its input already carried the handoff command.
+                self.db.execute("ALTER TABLE appserver_project_routes ADD COLUMN resource_handoff INTEGER")
         alfred_direct.ensure(self.db)
         self.on_direct = None
 
@@ -229,6 +261,9 @@ class ProjectRouter:
             if previous["brief"] != brief:
                 return self.result("rejected_conflicting_brief", route_id=previous["route_id"])
             return self.route_result(previous)
+        resource = RESOURCE.match(brief) is not None
+        if not resource and brief.lstrip().startswith("RESOURCE_HANDOFF"):
+            return self.result("rejected_resource_handoff", detail="Start the brief with 'RESOURCE_HANDOFF' on its own first line")
         election = DIRECT.match(brief)
         if election is None and brief.lstrip().startswith("DIRECT_RETURN"):
             return self.result("rejected_direct_return", detail="Start the brief with 'DIRECT_RETURN card=tasks/done/NAME.md' "
@@ -241,6 +276,20 @@ class ProjectRouter:
         envelope = {"route_id": route_id, "request_id": args["request_id"], "source": context, "brief": brief,
                     "browser": alfred_browser.route_block(self.db, owner["project"], args["owner_id"],
                                                           browser_command(route_id, args["owner_id"]))}
+        more = self.db.execute("SELECT 1 FROM appserver_project_routes WHERE owner_id=? AND state IN "
+                               "('accepted','sending','resuming','pending','pending_resume','held_owner','uncertain') LIMIT 1",
+                               (args["owner_id"],)).fetchone()
+        other_results = ""
+        if more:
+            envelope["finish"] = finish_command(route_id, args["owner_id"])
+            other_results = "Use the finish command for other completed assignments, with each assignment's route ID. "
+        handoff = ""
+        if resource:
+            envelope["resource_handoff"] = True
+            handoff = ("Chief marked this a shared-resource handoff: publish the completed release, confirmation or refusal "
+                       "as soon as it is true with: " + handoff_command(route_id, args["owner_id"])
+                       + " (ANSWER.txt is an owner-only file with your answer). It becomes this route's result; "
+                       "then continue other work privately. Never use it for progress. ")
         direct = ""
         if election:
             envelope["direct_return"] = {"card": election["card"], "quiet": bool(election["quiet"])}
@@ -256,18 +305,16 @@ class ProjectRouter:
                 + "Ship within existing authorization. Hold only for a human sign-in, release/account authority, a cost limit, "
                 "a reproducible failure of the requested main flow, real data preservation or privacy. Do not add unrequested reviews, test suites, case counters or reporting loops; "
                 "repeat checks only after a failure or material change. "
-                "If this brief only asks you to release, confirm or refuse a shared resource such as native UI, a browser or a host, "
-                "publish that completed answer as soon as it is true with: " + handoff_command(route_id, args["owner_id"])
-                + " (ANSWER.txt is an owner-only file with your answer). It becomes this route's result; "
-                "then continue other work privately. Never use it for progress." + (" " + direct if direct else "") + "\n" +
-                json.dumps(envelope, ensure_ascii=False))
+                "If this turn covers several assignments, start your final with ROUTE_RESULT <route_id> on its own line. "
+                + other_results + handoff + direct + "\n" + json.dumps(envelope, ensure_ascii=False))
         with self.db:
             if election and direct_ineligible(self.db, args["request_id"], context, bool(election["quiet"])):
                 return self.result("rejected_direct_return", detail="The request changed. Route without DIRECT_RETURN.")
             self.db.execute("INSERT INTO appserver_project_routes "
-                            "(route_id,request_id,owner_id,project,brief,input_text,input_hash,client_id,state,created,updated) "
-                            "VALUES (?,?,?,?,?,?,?,?,'pending',?,?)", (route_id, args["request_id"], args["owner_id"],
-                            owner["project"], brief, text, hashlib.sha256(text.encode()).hexdigest(), client_id, time.time(), time.time()))
+                            "(route_id,request_id,owner_id,project,brief,input_text,input_hash,client_id,state,created,updated,resource_handoff) "
+                            "VALUES (?,?,?,?,?,?,?,?,'pending',?,?,?)", (route_id, args["request_id"], args["owner_id"],
+                            owner["project"], brief, text, hashlib.sha256(text.encode()).hexdigest(), client_id, time.time(), time.time(),
+                            int(resource)))
             if election:
                 recipient = self.db.execute("""SELECT r.user_id,r.chat_id,r.label,u.added FROM requests r JOIN users u
                     ON u.user_id=r.user_id AND u.chat_id=r.chat_id AND u.label=r.label WHERE r.id=?""", (args["request_id"],)).fetchone()
@@ -349,12 +396,21 @@ class ProjectRouter:
                         if not isinstance(turn_id, str) or not turn_id:
                             self._set(route_id, "uncertain", "Acknowledgment lacks a turn ID; never repeat")
                         else:
-                            self._set(route_id, "accepted", turn_id=turn_id)
+                            # The socket reader may already have recorded it, and its turn may already be settled.
+                            self.acknowledged(row["client_id"], turn_id)
                             event = self.db.execute("SELECT terminal FROM appserver_project_turn_events WHERE owner_id=? AND turn_id=?",
                                                     (row["owner_id"], turn_id)).fetchone()
                             if event and event["terminal"]:
-                                self._schedule(self._complete(route_id, json.loads(event["terminal"])))
+                                self._schedule(self._complete_turn(row["owner_id"], turn_id, json.loads(event["terminal"])))
         return self.route_result(self.db.execute("SELECT * FROM appserver_project_routes WHERE route_id=?", (route_id,)).fetchone())
+
+    def acknowledged(self, client_id, turn_id):
+        """Record an owner turn/start acknowledgment in socket order, before that turn's later notifications."""
+        if not isinstance(client_id, str) or not isinstance(turn_id, str) or not turn_id:
+            return
+        with self.db:
+            self.db.execute("UPDATE appserver_project_routes SET state='accepted',turn_id=?,error=NULL,updated=? "
+                            "WHERE client_id=? AND state='sending'", (turn_id, time.time(), client_id))
 
     async def retry_held(self, owner_id, *, unarchive=False):
         owner = registered_owners(self.projects_path).get(owner_id)
@@ -409,8 +465,8 @@ class ProjectRouter:
                 self.db.execute("INSERT INTO appserver_project_turn_events(owner_id,turn_id,terminal) VALUES (?,?,?) "
                                 "ON CONFLICT(owner_id,turn_id) DO UPDATE SET terminal=excluded.terminal",
                                 (owner_id, turn_id, json.dumps(terminal)))
-            for row in rows:
-                self._schedule(self._complete(row["route_id"], terminal))
+            if rows:
+                self._schedule(self._complete_turn(owner_id, turn_id, terminal))
 
     def tracks_owner(self, thread_id):
         return self.db.execute("SELECT 1 FROM appserver_project_routes WHERE owner_id=? AND state IN ('sending','accepted') LIMIT 1",
@@ -422,13 +478,15 @@ class ProjectRouter:
         task.add_done_callback(self.tasks.discard)
         task.add_done_callback(lambda completed: completed.exception() if not completed.cancelled() else None)
 
-    async def _complete(self, route_id, turn):
-        row = self.db.execute("SELECT * FROM appserver_project_routes WHERE route_id=?", (route_id,)).fetchone()
-        if row["state"] != "accepted":
-            return
-        text = row["candidate_final"] or ""
+    def _turn_routes(self, owner_id, turn_id):
+        return self.db.execute("SELECT * FROM appserver_project_routes WHERE owner_id=? AND turn_id=? ORDER BY created,route_id",
+                               (owner_id, turn_id)).fetchall()
+
+    async def _final(self, owner_id, turn_id, turn, rows, need_sha):
+        """(status, complete safe final text, raw digest) for one terminal owner turn."""
+        text = next((row["candidate_final"] for row in rows if row["candidate_final"]), "")
         event = self.db.execute("SELECT candidate_final,final_sha256 FROM appserver_project_turn_events WHERE owner_id=? AND turn_id=?",
-                                (row["owner_id"], row["turn_id"])).fetchone()
+                                (owner_id, turn_id)).fetchone()
         final_sha = event["final_sha256"] if event else None
         if event and event["candidate_final"]:
             text = event["candidate_final"]
@@ -440,14 +498,13 @@ class ProjectRouter:
                     final_sha = alfred_direct.sha(item["text"])
         final_sha = turn.get("final_sha256", final_sha)
         status = "completed" if turn.get("status") == "completed" else "blocked"
-        elected = self.db.execute("SELECT 1 FROM appserver_direct_elections WHERE route_id=?", (route_id,)).fetchone()
         if status == "blocked":
             error = safe_text((turn.get("error") or {}).get("message", ""))
             text = "Existing owner turn " + str(turn.get("status", "failed")) + (": " + error if error else "")
-        elif not text or (elected and final_sha is None):
+        elif not text or (need_sha and final_sha is None):
             # One metadata read on a terminal event, never progress polling.
-            page = await self.rpc("thread/items/list", {"threadId": row["owner_id"].split(":", 1)[1],
-                                  "turnId": row["turn_id"], "limit": 100, "sortDirection": "desc"})
+            page = await self.rpc("thread/items/list", {"threadId": owner_id.split(":", 1)[1],
+                                  "turnId": turn_id, "limit": 100, "sortDirection": "desc"})
             raw = next((entry["item"].get("text") for entry in page.get("data", [])
                         if entry.get("item", {}).get("type") == "agentMessage"
                         and entry["item"].get("phase") in (None, "final_answer")), None)
@@ -455,22 +512,133 @@ class ProjectRouter:
                 text, final_sha = safe_text(raw), alfred_direct.sha(raw)
             if not text:
                 status, text = "blocked", "Owner turn ended without a final outcome. Inspect its existing chat."
+        return status, text, final_sha
+
+    async def _complete_turn(self, owner_id, turn_id, turn):
+        """Settle one terminal owner turn once. A final closes only the route it identifies.
+
+        One assignment in a turn: its final, as before. Several routes in one native turn: the
+        final's single ROUTE_RESULT label picks its route; an unlabelled or ambiguous
+        final is saved whole for Chief's private reconciliation and every route stays
+        open. Routes acknowledged after the turn was settled never reuse its final.
+        """
+        rows = self._turn_routes(owner_id, turn_id)
+        if not any(row["state"] == "accepted" for row in rows):
+            return
+        elected = {row[0] for row in self.db.execute("SELECT route_id FROM appserver_direct_elections WHERE owner_id=?", (owner_id,))}
+        saved = self.db.execute("SELECT * FROM appserver_project_turn_results WHERE owner_id=? AND turn_id=?",
+                                (owner_id, turn_id)).fetchone()
+        if saved is None:
+            status, text, final_sha = await self._final(owner_id, turn_id, turn, rows,
+                                                       any(row["route_id"] in elected for row in rows))
+            # Looking up the final may have yielded to another terminal event or acceptance.
+            saved = self.db.execute("SELECT * FROM appserver_project_turn_results WHERE owner_id=? AND turn_id=?",
+                                    (owner_id, turn_id)).fetchone()
+        if saved is not None:
+            status, text, final_sha = "completed", saved["body"], saved["final_sha256"]
+
+        rows = self._turn_routes(owner_id, turn_id)
+        open_routes = [row for row in rows if row["state"] == "accepted"]
+        if not open_routes:
+            return
+        ids = [row["route_id"] for row in rows]
+        awaiting_ack = self.db.execute(
+            "SELECT 1 FROM appserver_project_routes WHERE owner_id=? AND turn_id IS NULL "
+            "AND state IN ('sending','uncertain') LIMIT 1", (owner_id,)).fetchone()
+        single = len(rows) == 1 and not awaiting_ack
+        notify = False
+        if status == "blocked" and single:
+            targets = open_routes
+        else:
+            if saved is None:
+                first, separator, answer = text.lstrip().partition("\n")
+                label = LABEL.fullmatch(first.rstrip("\r"))
+                labels = LABEL.findall(text)
+                target = None
+                if status == "completed":
+                    if label and len(labels) == 1 and separator and answer.strip():
+                        if label[1] in {row["route_id"] for row in open_routes}:
+                            target, text = label[1], answer
+                    elif single and not labels and not first.lstrip().startswith("ROUTE_RESULT"):
+                        target = ids[0]
+                state = "attributed" if target else ("ambiguous" if status == "completed" else "failed")
+                notify = any(row["route_id"] != target for row in open_routes)
+                with self.db:
+                    self.db.execute("INSERT INTO appserver_project_turn_results VALUES (?,?,?,?,?,?,?,?,?,?)", (
+                        owner_id, turn_id, text, final_sha, state, target,
+                        json.dumps(ids), int(not notify), time.time(), time.time()))
+            else:
+                # Finish an interrupted write from the first saved decision. A retry's text can never replace it.
+                target = saved["route_id"] if saved["state"] == "attributed" else None
+                if set(json.loads(saved["routes"])) != set(ids):
+                    notify = any(row["route_id"] != target for row in open_routes)
+                    with self.db:
+                        self.db.execute("UPDATE appserver_project_turn_results SET routes=?,notified=?,updated=? "
+                                        "WHERE owner_id=? AND turn_id=?", (json.dumps(ids), int(not notify), time.time(), owner_id, turn_id))
+                else:
+                    notify = not saved["notified"]
+            targets = [row for row in open_routes if row["route_id"] == target]
+            detail = ("The owner turn " + turn_id + " has no individual answer for this route. "
+                      "The owner can finish the route with its assignment ID.")
+            with self.db:
+                for row in open_routes:
+                    if row["route_id"] != target:
+                        self.db.execute("UPDATE appserver_project_routes SET error=?,updated=? WHERE route_id=? AND state='accepted'",
+                                        (detail, time.time(), row["route_id"]))
+        closed = [row["route_id"] for row in targets if self._close(row, status, text, final_sha, row["route_id"] in elected and not awaiting_ack)]
+        for route_id in closed:
+            await self._deliver(route_id)
+        if notify:
+            await self._notify(owner_id, turn_id)
+
+    def _close(self, row, status, text, final_sha, elected):
+        """Save one route's outcome, or send its elected direct return. True when Chief should receive it."""
         if elected:
             if status == "completed":
-                sent, reason = alfred_direct.settle(self.inbox, route_id, row["owner_id"], row["turn_id"], final_sha,
+                sent, reason = alfred_direct.settle(self.inbox, row["route_id"], row["owner_id"], row["turn_id"], final_sha,
                                                     registered_owners(self.projects_path), self.workspace)
             else:
                 sent, reason = False, "the owner turn did not complete"
             if sent:
                 if self.on_direct:
                     self.on_direct()
-                return
+                return False
             text += "\nDirect return not used: " + reason + "."
         with self.db:
-            changed = self.db.execute("UPDATE appserver_project_routes SET state=?,outcome=?,updated=? WHERE route_id=? AND state='accepted'",
-                                      (status, text, time.time(), route_id)).rowcount
-        if changed:
-            await self._deliver(route_id)
+            return bool(self.db.execute("UPDATE appserver_project_routes SET state=?,outcome=?,updated=? "
+                                        "WHERE route_id=? AND state='accepted'",
+                                        (status, text, time.time(), row["route_id"])).rowcount)
+
+    async def _notify(self, owner_id, turn_id):
+        """One content-free notice to Chief per shared-turn route set; the final stays private until matched."""
+        saved = self.db.execute("SELECT * FROM appserver_project_turn_results WHERE owner_id=? AND turn_id=? AND notified=0",
+                                (owner_id, turn_id)).fetchone()
+        if saved is None:
+            return
+        rows = self._turn_routes(owner_id, turn_id)
+        routes = ", ".join(row["route_id"] + " (request " + row["request_id"] + ", " + row["state"] + ")" for row in rows)
+        if saved["state"] == "ambiguous":
+            decision = "Its final identified no single route. Read the saved answer and match it once with --route-id ROUTE-ID."
+        elif saved["state"] == "failed":
+            decision = "The turn failed before it returned an individual answer. Chief can read the saved diagnostic."
+        else:
+            decision = "Its final was attributed to route " + saved["route_id"] + "."
+        body = ("The owner turn needs an assignment check. Known routes: " + routes + ". " + decision
+                + " Use the read command of assignments item turn:" + owner_id + ":" + turn_id
+                + " (alfred_local.py match --owner-id " + owner_id + " --turn-id " + turn_id + "). "
+                "The owner can finish each remaining route with its own answer.")
+        key = hashlib.sha256((owner_id + "\n" + turn_id + "\n" + saved["routes"]).encode()).hexdigest()
+        event = {"event_id": "project-turn:" + key, "route_id": None, "owner_id": owner_id,
+                 "project": rows[0]["project"], "status": "needs_match", "body": body}
+        try:
+            result = self.on_outcome(event)
+            if inspect.isawaitable(result):
+                await result
+        except BridgeError:
+            return  # Retried on reconnect; the saved final and open routes are unchanged.
+        with self.db:
+            self.db.execute("UPDATE appserver_project_turn_results SET notified=1,updated=? WHERE owner_id=? AND turn_id=? AND routes=?",
+                            (time.time(), owner_id, turn_id, saved["routes"]))
 
     async def _deliver(self, route_id):
         row = self.db.execute("SELECT * FROM appserver_project_routes WHERE route_id=? AND delivered=0 AND state IN ('completed','blocked')",
@@ -500,7 +668,7 @@ class ProjectRouter:
         with self.db:
             self.db.execute("UPDATE appserver_project_routes SET state='pending_resume',error='Resume interrupted; brief was not dispatched' WHERE state='resuming'")
         rows = self.db.execute("SELECT * FROM appserver_project_routes WHERE state IN ('sending','uncertain','accepted') ORDER BY created").fetchall()
-        resumed = set()
+        resumed, failed = set(), set()
         for row in rows:
             owner = owners.get(row["owner_id"])
             if not owner or owner["kind"] != "codex":
@@ -531,18 +699,30 @@ class ProjectRouter:
                         self._set(row["route_id"], "uncertain", "No acceptance evidence; never repeat without manual recovery")
                         continue
                     self._set(row["route_id"], "accepted", turn_id=found)
-                current = self.db.execute("SELECT * FROM appserver_project_routes WHERE route_id=?", (row["route_id"],)).fetchone()
-                turns = await self.rpc("thread/turns/list", {"threadId": owner["thread_id"], "limit": 100,
-                                                           "sortDirection": "desc", "itemsView": "notLoaded"})
-                for turn in turns.get("data", []):
-                    if turn.get("id") == current["turn_id"] and turn.get("status") in {"completed", "failed", "interrupted"}:
-                        await self._complete(row["route_id"], turn)
-                        break
             except Exception:
                 # Preserve the original dispatch state. A reconnect failure never permits replay.
+                failed.add(row["owner_id"])
                 with self.db:
                     self.db.execute("UPDATE appserver_project_routes SET error='Owner reconnect unavailable; original dispatch preserved' WHERE route_id=?",
                                     (row["route_id"],))
+        # Every acceptance is known before any turn is settled, so a shared turn sees all of its routes.
+        for owner_id in sorted(resumed - failed):
+            turn_ids = {row[0] for row in self.db.execute("SELECT turn_id FROM appserver_project_routes WHERE owner_id=? "
+                                                          "AND state='accepted' AND turn_id IS NOT NULL", (owner_id,))}
+            if not turn_ids:
+                continue
+            try:
+                turns = await self.rpc("thread/turns/list", {"threadId": owners[owner_id]["thread_id"], "limit": 100,
+                                                           "sortDirection": "desc", "itemsView": "notLoaded"})
+                for turn in turns.get("data", []):
+                    if turn.get("id") in turn_ids and turn.get("status") in {"completed", "failed", "interrupted"}:
+                        await self._complete_turn(owner_id, turn["id"], turn)
+            except Exception:
+                with self.db:
+                    self.db.execute("UPDATE appserver_project_routes SET error='Owner reconnect unavailable; original dispatch preserved' "
+                                    "WHERE owner_id=? AND state='accepted'", (owner_id,))
+        for row in self.db.execute("SELECT owner_id,turn_id FROM appserver_project_turn_results WHERE notified=0").fetchall():
+            await self._notify(row["owner_id"], row["turn_id"])
         for row in self.db.execute("SELECT route_id FROM appserver_project_routes WHERE delivered=0 AND state IN ('completed','blocked')").fetchall():
             await self._deliver(row["route_id"])
 

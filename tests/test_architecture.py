@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -18,7 +19,7 @@ import alfred_direct
 import alfred_projects
 from alfred_assignments import capsule
 from alfred_checkpoint import confirm, prepare
-from alfred_local import browser_tab, stage_return, submit
+from alfred_local import browser_tab, finish, handoff, match, stage_return, submit
 from alfred_outcomes import retain_direct_receipts
 from telegram_bridge import BridgeError, Inbox, PREFIX
 
@@ -110,7 +111,7 @@ class Workspace(Base):
         with self.inbox.db:
             for table in ("requests", "outbox", "outbox_parts", "appserver_dispatch", "appserver_project_routes", "request_context",
                           "appserver_direct_elections", "appserver_direct_candidates", "appserver_direct_returns",
-                          "appserver_project_calls", "appserver_project_turn_events"):
+                          "appserver_project_calls", "appserver_project_turn_events", "appserver_project_turn_results"):
                 self.inbox.db.execute("DELETE FROM " + table)
         for path in self.workspace.glob("tasks/*/*.md"):
             path.unlink()
@@ -510,6 +511,217 @@ class AssignmentRecovery(Workspace):
         self.inbox.ingest(message(3))
         await self.adapter.dispatch_pending()
         self.assertEqual(self.assignments(self.dispatched()[-1])["mode"], "full")
+
+
+class Routes(Workspace):
+    OWNER_ID = "codex:" + PROJECT_OWNER
+
+    async def two_routes(self, update=1, second_route=True):
+        """Two different requests in one coordinator turn, routed to the same owner."""
+        self.daemon.active = None
+        self.inbox.ingest(message(update, text="Fix the checkout bug"))
+        self.inbox.ingest(message(update + 1, text="Rename the shipping page"))
+        await self.adapter.dispatch_pending()
+        self.turn = self.daemon.active
+        self.assertEqual(await self.route("tg:43:" + str(update), self.turn, "checkout-" + str(update),
+                                          brief="Fix the checkout bug"), "accepted")
+        if second_route:
+            await self.route_second(update)
+        return [self.route_id("tg:43:" + str(update + index)) for index in range(1 + second_route)]
+
+    async def route_second(self, update=1):
+        self.assertEqual(await self.route("tg:43:" + str(update + 1), self.turn, "shipping-" + str(update),
+                                          brief="Rename the shipping page"), "accepted")
+
+    def route_id(self, request_id):
+        return self.inbox.db.execute("SELECT route_id FROM appserver_project_routes WHERE request_id=?", (request_id,)).fetchone()[0]
+
+    def state(self, route_id):
+        return self.inbox.db.execute("SELECT state FROM appserver_project_routes WHERE route_id=?", (route_id,)).fetchone()[0]
+
+    def children(self):
+        return dict(self.inbox.db.execute("""SELECT c.parent_request_id,r.body FROM request_context c JOIN requests r ON r.id=c.request_id
+                                          WHERE c.source='project_outcome' AND c.parent_request_id IS NOT NULL"""))
+
+    def notices(self):
+        return [row[0] for row in self.inbox.db.execute("""SELECT r.body FROM request_context c JOIN requests r ON r.id=c.request_id
+                                                        WHERE c.event_id LIKE 'project-turn:%' ORDER BY r.received""")]
+
+    def owner_input(self, route_id):
+        return self.inbox.db.execute("SELECT input_text FROM appserver_project_routes WHERE route_id=?", (route_id,)).fetchone()[0]
+
+
+class SharedOwnerTurns(Routes):
+    """Different requests that reach one owner in one native turn (the test daemon gives every owner turn/start OWNER_TURN)."""
+    async def test_one_job_final_stays_simple_and_cannot_use_the_sibling_command(self):
+        self.inbox.ingest(message(1))
+        await self.adapter.dispatch_pending()
+        self.assertEqual(await self.route("tg:43:1", self.daemon.active, "only"), "accepted")
+        route_id = self.route_id("tg:43:1")
+        envelope = json.loads(self.owner_input(route_id).split("\n", 1)[1])
+        self.assertNotIn("finish", envelope)
+        self.assertIn("ROUTE_RESULT <route_id>", self.owner_input(route_id))
+        with self.assertRaisesRegex(BridgeError, "shares its owner turn"):
+            finish(self.inbox, route_id, self.OWNER_ID, "Progress: halfway")
+        await self.native(*final("Checkout fixed."))
+        self.assertEqual(self.state(route_id), "completed")
+        self.assertIn("Checkout fixed.", self.children()["tg:43:1"])
+        self.assertEqual(self.notices(), [])
+
+    async def test_labelled_final_closes_only_its_route_and_the_sibling_is_finished_later(self):
+        first, second = await self.two_routes()
+        await self.native(*final("ROUTE_RESULT " + second + "\nShipping page renamed."))
+        self.assertEqual((self.state(first), self.state(second)), ("accepted", "completed"))
+        self.assertEqual(list(self.children()), ["tg:43:2"])
+        self.assertIn("Shipping page renamed.", self.children()["tg:43:2"])
+        notices = self.notices()
+        self.assertEqual(len(notices), 1)
+        self.assertIn(first, notices[0])
+        self.assertNotIn("Shipping page renamed", notices[0])
+        await self.native(*final("ROUTE_RESULT " + second + "\nShipping page renamed."))  # Redelivered: nothing new.
+        self.assertEqual((len(self.children()), len(self.notices())), (1, 1))
+        finish(self.inbox, first, self.OWNER_ID, "Checkout fixed and verified.")
+        self.assertEqual(finish(self.inbox, first, self.OWNER_ID, "Checkout fixed and verified."),
+                         self.inbox.db.execute("SELECT request_id FROM request_context WHERE parent_request_id='tg:43:1'").fetchone()[0])
+        children = self.children()
+        self.assertIn("Checkout fixed and verified.", children["tg:43:1"])
+        self.assertNotIn("Shipping", children["tg:43:1"])
+        self.assertNotIn("Checkout", children["tg:43:2"])
+
+    async def test_unlabelled_final_waits_privately_for_chief_and_keeps_every_route_open(self):
+        first, second = await self.two_routes()
+        raw = ("Checkout fixed; the shipping page is renamed in build " + "0123456789abcdef" * 4 + ".\n"
+               + "Verified detail. " * 600)
+        text = alfred_projects.safe_text(raw)  # The existing outcome redaction; nothing is shortened.
+        self.assertIn("[REDACTED]", text)
+        await self.native(*final(raw))
+        self.assertEqual((self.state(first), self.state(second), self.children()), ("accepted", "accepted", {}))
+        await self.native(*final(raw))
+        notices = self.notices()
+        self.assertEqual(len(notices), 1)
+        self.assertNotIn("Checkout fixed", notices[0])
+        self.assertIn("assignments item turn:" + self.OWNER_ID + ":" + OWNER_TURN, notices[0])
+        self.assertNotIn("[REDACTED]", notices[0])
+        items = capsule(self.inbox.db, self.root, self.workspace)["items"]
+        pending = items["turn:" + self.OWNER_ID + ":" + OWNER_TURN]
+        self.assertEqual((pending["state"], pending["open_routes"]), ("ambiguous", [first, second]))
+        self.assertTrue(pending["read"].endswith(" match --owner-id " + self.OWNER_ID + " --turn-id " + OWNER_TURN))
+        shown = subprocess.run([*shlex.split(pending["read"]), "--root", str(self.root)], capture_output=True, text=True)
+        self.assertEqual(json.loads(shown.stdout)["final"], text, shown.stderr)
+        self.assertNotIn("Checkout fixed", json.dumps(items["turn:" + self.OWNER_ID + ":" + OWNER_TURN]))
+        saved = match(self.inbox, self.OWNER_ID, OWNER_TURN)
+        self.assertEqual((saved["status"], saved["final"]), ("ambiguous", text))  # The complete original text.
+        matched = match(self.inbox, self.OWNER_ID, OWNER_TURN, first)
+        self.assertEqual(match(self.inbox, self.OWNER_ID, OWNER_TURN, first), matched)
+        self.assertIn(text, self.children()["tg:43:1"])
+        self.assertEqual((self.state(first), self.state(second)), ("completed", "accepted"))
+        with self.assertRaises(BridgeError):
+            finish(self.inbox, first, self.OWNER_ID, "Another answer")
+        finish(self.inbox, second, self.OWNER_ID, "Shipping page renamed.")
+        self.assertNotIn("Verified detail", self.children()["tg:43:2"])
+        self.assertNotIn("turn:" + self.OWNER_ID + ":" + OWNER_TURN, capsule(self.inbox.db, self.root, self.workspace)["items"])
+        # Chief's answer to one matched result closes only that request.
+        self.daemon.active = None
+        await self.adapter.dispatch_pending()
+        child = matched["request_id"]
+        self.assertTrue(self.reply(child, "Checkout and shipping are done.", self.daemon.active, "answer-1")[0])
+        self.assertEqual((self.status("tg:43:1"), self.status("tg:43:2")), ("done", "processing"))
+
+    async def test_restart_and_late_acknowledgments_never_reuse_a_settled_final(self):
+        first, second = await self.two_routes()
+        client = self.inbox.db.execute("SELECT client_id FROM appserver_project_routes WHERE route_id=?", (second,)).fetchone()[0]
+        with self.inbox.db:  # The collector stopped before the second acknowledgment was saved.
+            self.inbox.db.execute("UPDATE appserver_project_routes SET state='sending',turn_id=NULL WHERE route_id=?", (second,))
+
+        class Restart(Daemon):
+            async def __call__(self, method, params):
+                if params.get("threadId") == PROJECT_OWNER and method == "thread/turns/list":
+                    return {"data": [{"id": OWNER_TURN, "status": "completed"}]}
+                if params.get("threadId") == PROJECT_OWNER and method == "thread/items/list":
+                    return {"data": [{"turnId": OWNER_TURN, "item": {"type": "userMessage", "clientId": client, "content": []}},
+                                     {"turnId": OWNER_TURN, "item": {"type": "agentMessage", "phase": "final_answer",
+                                                                      "text": "Both are done."}}]}
+                return await super().__call__(method, params)
+        self.adapter.router.rpc = Restart()
+        await self.adapter.router.reconcile()
+        await self.drain()
+        self.assertEqual((self.state(first), self.state(second), self.children()), ("accepted", "accepted", {}))
+        self.assertEqual(len(self.notices()), 1)
+        await self.adapter.router.reconcile()
+        self.assertEqual(len(self.notices()), 1)
+
+        # The socket reader records an owner acknowledgment before that turn's completion is read.
+        self.fresh()
+        self.adapter.router.rpc = self.daemon
+        first, second = await self.two_routes(11)
+        client = self.inbox.db.execute("SELECT client_id FROM appserver_project_routes WHERE route_id=?", (second,)).fetchone()[0]
+        with self.inbox.db:
+            self.inbox.db.execute("UPDATE appserver_project_routes SET state='sending',turn_id=NULL WHERE route_id=?", (second,))
+        future = asyncio.get_running_loop().create_future()
+        self.adapter.pending["ack"] = future
+        self.adapter.rpc_context["ack"] = ("turn/start", {"threadId": PROJECT_OWNER, "clientUserMessageId": client})
+        await self.native({"id": "ack", "result": {"turn": {"id": OWNER_TURN}}}, *final("Checkout fixed."))
+        self.assertEqual((self.state(first), self.state(second), self.children()), ("accepted", "accepted", {}))
+
+        # An acknowledgment that arrives after its turn settled for another route stays open for its own result.
+        self.fresh()
+        first, = await self.two_routes(21, second_route=False)
+        await self.native(*final("Checkout fixed."))
+        await self.route_second(21)
+        await self.drain()
+        second = self.route_id("tg:43:22")
+        self.assertEqual(self.state(second), "accepted")
+        self.assertEqual(list(self.children()), ["tg:43:21"])
+        self.assertIn("attributed to route " + first, self.notices()[0])
+        finish(self.inbox, second, self.OWNER_ID, "Shipping page renamed.")
+        self.assertNotIn("Checkout", self.children()["tg:43:22"])
+
+    async def test_failed_shared_turn_keeps_each_assignment_open(self):
+        first, second = await self.two_routes()
+        await self.native(*final("Partial checkout notes", status="failed"))
+        self.assertEqual((self.state(first), self.state(second)), ("accepted", "accepted"))
+        self.assertEqual(self.children(), {})
+        self.assertEqual(len(self.notices()), 1)
+        self.assertNotIn("--route-id", self.notices()[0])
+        with self.assertRaisesRegex(BridgeError, "without an individual answer"):
+            match(self.inbox, self.OWNER_ID, OWNER_TURN, first)
+
+
+class ResourceHandoff(Routes):
+    async def test_only_an_explicit_marker_gets_the_handoff_command(self):
+        self.inbox.ingest(message(1, text="Release the shared browser"))
+        self.inbox.ingest(message(2, text="Release the shared browser"))
+        await self.adapter.dispatch_pending()
+        turn = self.daemon.active
+        self.assertIn("'RESOURCE_HANDOFF' on its own first line", self.dispatched()[0])
+        # Task prose that mentions releasing a resource is ordinary work.
+        self.assertEqual(await self.route("tg:43:1", turn, "plain", brief="Release the shared browser when you are done"), "accepted")
+        plain = self.route_id("tg:43:1")
+        text = self.owner_input(plain)
+        envelope = json.loads(text.split("\n", 1)[1])
+        self.assertNotIn(" handoff --route-id", text)
+        self.assertNotIn("resource_handoff", envelope)
+        self.assertEqual(envelope["brief"], "Release the shared browser when you are done")
+        self.assertEqual(envelope["source"]["authority"], "installation_owner")
+        self.assertIn("sessionName", envelope["browser"])
+        with self.assertRaisesRegex(BridgeError, "did not mark"):
+            handoff(self.inbox, plain, self.OWNER_ID, "Browser released")
+        self.assertEqual(await self.route("tg:43:2", turn, "bad", brief="RESOURCE_HANDOFF: release it", owner=SECOND_OWNER),
+                         "rejected_resource_handoff")
+        self.assertEqual(await self.route("tg:43:2", turn, "marked", brief="RESOURCE_HANDOFF\nRelease the shared browser",
+                                          owner=SECOND_OWNER), "accepted")
+        marked = self.route_id("tg:43:2")
+        text = self.owner_input(marked)
+        self.assertIn(" handoff --route-id " + marked, text)
+        self.assertTrue(json.loads(text.split("\n", 1)[1])["resource_handoff"])
+        handoff(self.inbox, marked, "codex:" + SECOND_OWNER, "Browser released")
+        self.assertEqual(self.state(marked), "completed")
+        self.assertIn("Browser released", self.children()["tg:43:2"])
+        # A route saved before the marker existed keeps the command its input already offered.
+        with self.inbox.db:
+            self.inbox.db.execute("UPDATE appserver_project_routes SET resource_handoff=NULL WHERE route_id=?", (plain,))
+        handoff(self.inbox, plain, self.OWNER_ID, "Browser released")
+        self.assertEqual(self.state(plain), "completed")
 
 
 def run(workspace, *args, **kwargs):

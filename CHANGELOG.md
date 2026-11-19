@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.2 — 2026-11-18
+
+- **One owner turn, several requests.** When different requests reach the same existing owner in one native turn, a final closes only the route it names with a `ROUTE_RESULT ROUTE-ID` line. A one-route final needs no label.
+  - The owner finishes other routes with the new `alfred_local.py finish`. It works only for a route that shares its turn, or whose turn ended without giving it the final.
+  - An unlabelled or ambiguous final reaches no requester. The complete text is saved privately and every route stays open. Chief gets one content-free notice and an assignments `turn:` item. `alfred_local.py match` reads the final, or with `--route-id` makes it that route's ordinary result.
+  - Owner acknowledgments are recorded in socket order. Reconnect collects every acceptance before settling a turn. A restart recovers the original assignment and answer. A late acknowledgment cannot reuse that answer. A failed shared turn leaves the assignments open. Direct returns still refuse shared turns.
+- **Explicit shared-resource handoffs.** The `handoff` command and its instructions now appear only on routes whose brief starts with `RESOURCE_HANDOFF` on its own line. The brief's wording is never searched. The marker works through the existing route tool, and coordinator dispatches describe it, so running sessions can use it.
+  - `handoff` refuses unmarked new routes. Routes saved earlier keep the command their input already offered.
+  - Ordinary routes keep the browser, brief, authority and direct-return controls.
+
+Migration: no breaking change, configuration or tool registration. Restart the one collector at a safe boundary to load the change; it adds one table and one column to the private database. Saved route inputs are not rewritten. An installation's own instructions that described `handoff` for every route should mention `RESOURCE_HANDOFF` instead.
+
 ## 0.7.1 — 2026-11-18
 
 - Browser origins reject the URL user-information delimiter directly. This preserves the tab binding checks and lets the source pass the after-answer credential scan.
