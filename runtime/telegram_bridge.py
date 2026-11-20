@@ -32,6 +32,7 @@ MAX_TEXT = 4000  # Telegram part size only; never a task or complete-answer limi
 MAX_ATTACHMENT = 20 * 1024 * 1024  # Telegram Bot API getFile download limit.
 MAX_ATTACHMENT_STORAGE = 100 * 1024 * 1024  # Per enrolled contact; the owner is bounded by free disk only.
 ATTACHMENT_FREE_RESERVE = 2 * 1024 ** 3  # Never fill the host disk with received files.
+ATTACHMENT_NOTICE_INTERVAL = 5 * 60  # Combine offline notices for the same failure and chat.
 AUDIO_EXTENSIONS = {".ogg", ".oga", ".opus", ".mp3", ".m4a", ".mp4", ".wav", ".webm", ".flac", ".aac"}
 AUDIO_MIME_EXTENSIONS = {"audio/ogg": ".ogg", "audio/opus": ".opus", "audio/mpeg": ".mp3",
                          "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/wav": ".wav",
@@ -56,6 +57,10 @@ class BridgeError(Exception):
 
 class TelegramConnectError(OSError):
     """Connection failed before an HTTP request could be transmitted."""
+
+
+class AttachmentReadError(BridgeError):
+    """A download failure whose message is safe to show to the sender."""
 
 
 class ReplyQueueFull(BridgeError):
@@ -278,30 +283,79 @@ class Telegram:
 
     def download(self, file_id, max_bytes):
         """Return bounded opaque bytes. Never expose the credential-bearing URL."""
+        failure = "Telegram could not look up the file."
+        limit_error = ("The file exceeds Telegram's 20 MiB download limit. Please send a smaller file."
+                       if max_bytes == MAX_ATTACHMENT else "Private attachment storage is full. Please send text for now.")
         try:
             info = self.call("getFile", {"file_id": file_id})
             path = info.get("file_path", "")
             size = info.get("file_size")
             if (not isinstance(path, str) or not re.fullmatch(r"[A-Za-z0-9_./-]{1,1024}", path)
                     or path.startswith("/") or any(part in {"", ".", ".."} for part in path.split("/"))):
-                raise BridgeError("Attachment download unavailable")
+                raise AttachmentReadError("Telegram did not return a usable file location.")
             if isinstance(size, int) and size > max_bytes:
-                raise BridgeError("Attachment exceeds the download limit")
+                raise AttachmentReadError(limit_error)
+            failure = "The file download from Telegram was interrupted."
             request = urllib.request.Request("https://api.telegram.org/file/bot" + self.token + "/" + path)
             with self.opener.open(request, timeout=40) as response:
                 length = response.headers.get("Content-Length")
                 if length is not None and int(length) > max_bytes:
-                    raise BridgeError("Attachment exceeds the download limit")
+                    raise AttachmentReadError(limit_error)
                 data = response.read(max_bytes + 1)
             if len(data) > max_bytes:
-                raise BridgeError("Attachment exceeds the download limit")
+                raise AttachmentReadError(limit_error)
             if ((length is not None and len(data) != int(length))
                     or (isinstance(size, int) and len(data) != size)):
-                raise BridgeError("Attachment download incomplete")
+                raise AttachmentReadError("Telegram returned an incomplete file.")
             return data
-        except (BridgeError, OSError, ValueError, TypeError, AttributeError, http.client.HTTPException):
-            # Neither Telegram errors nor urllib errors are safe to persist here.
-            raise BridgeError("Attachment download failed. Please resend a file smaller than 10 MiB") from None
+        except AttachmentReadError:
+            raise
+        except (BridgeError, urllib.error.HTTPError) as error:
+            status = error.status if isinstance(error, BridgeError) else error.code
+            if status == 429:
+                failure = "Telegram has paused file downloads. Please try again later."
+            raise AttachmentReadError(failure, status) from None
+        except (OSError, ValueError, TypeError, AttributeError, http.client.HTTPException):
+            raise AttachmentReadError(failure) from None
+
+
+def _read_attachment(api, sources, available, require_content):
+    """Try the largest usable photo first. Other files have a single version."""
+    file_ids = []
+    failure = "Telegram did not provide a file to download."
+    for source in sources:
+        file_id = source.get("file_id")
+        if not isinstance(file_id, str) or not file_id or file_id in file_ids:
+            continue
+        declared = source.get("file_size")
+        if isinstance(declared, int) and declared > MAX_ATTACHMENT:
+            failure = "The file exceeds Telegram's 20 MiB download limit. Please send a smaller file."
+        elif isinstance(declared, int) and declared > available:
+            failure = "Private attachment storage is full. Please send text for now."
+        else:
+            file_ids.append(file_id)
+    if api is None:
+        raise AttachmentReadError("The Telegram file service is unavailable.")
+    if not file_ids:
+        raise AttachmentReadError(failure)
+
+    # A read can be repeated safely. With one usable version, retry it once.
+    attempts = file_ids if len(file_ids) > 1 else file_ids * 2
+    for file_id in attempts:
+        try:
+            data = api.download(file_id, available)
+            if not isinstance(data, bytes) or (require_content and not data):
+                raise AttachmentReadError("Telegram returned an incomplete file.")
+            if len(data) > available:
+                raise AttachmentReadError("The file exceeds the available attachment storage.")
+            return data
+        except AttachmentReadError as error:
+            failure = str(error)
+            if error.status in (401, 403, 429):
+                raise
+        except (BridgeError, OSError):
+            failure = "The file download from Telegram was interrupted."
+    raise AttachmentReadError(failure)
 
 
 class Inbox:
@@ -537,10 +591,10 @@ class Inbox:
             source, kind, suffix = message[video], "video", ".mp4"
         else:
             photos = [p for p in message.get("photo", []) if isinstance(p, dict)]
-            source = max(photos, key=lambda p: p.get("width", 0) * p.get("height", 0), default={})
+            photos.sort(key=lambda p: p.get("width", 0) * p.get("height", 0), reverse=True)
             kind, suffix = "photo", ".jpg"
         destination = None
-        failure = "Attachment not received. Please resend it (Telegram lets bots download files up to 20 MiB), or send text"
+        failure = "Private attachment storage is unavailable. Please send text for now."
         try:
             if audio_kind:
                 duration = source.get("duration")
@@ -553,12 +607,6 @@ class Inbox:
                 if suffix == ".bin":
                     failure = "Audio format unavailable. Please send a voice note, MP3, M4A, OGG or WAV recording"
                     raise BridgeError(failure)
-            if not isinstance(source.get("file_id"), str) or not source["file_id"] or api is None:
-                raise BridgeError("Attachment download unavailable. Please resend the file")
-            declared = source.get("file_size")
-            if isinstance(declared, int) and declared > MAX_ATTACHMENT:
-                failure = "Attachment exceeds Telegram's 20 MiB bot download limit. Please send a smaller file or a link"
-                raise BridgeError(failure)
             directory = self.root / "attachments"
             directory.mkdir(mode=0o700, exist_ok=True)
             info = directory.lstat()
@@ -570,22 +618,23 @@ class Inbox:
                 used = self.db.execute("SELECT COALESCE(SUM(a.size),0) FROM attachments a JOIN requests r ON r.id=a.request_id "
                                        "WHERE r.user_id=? AND a.status='ready'", (uid,)).fetchone()[0]
                 available = min(available, MAX_ATTACHMENT_STORAGE - used)
-            if available <= 0 or (isinstance(declared, int) and declared > available):
+            if available <= 0:
                 failure = "Private attachment storage is full. Please send text for now"
                 raise BridgeError(failure)
-            data = api.download(source["file_id"], available)
-            if not isinstance(data, bytes) or len(data) > available or (audio_kind and not data):
-                raise BridgeError("Attachment exceeds the storage limit. Please send a smaller file")
+            sources = photos if kind == "photo" else [source]
+            data = _read_attachment(api, sources, available, kind in {"photo", "voice", "audio"})
             destination = directory / (hashlib.sha256(key.encode()).hexdigest() + suffix)
             # The name comes from our request ID, never from sender-controlled paths.
             with destination.open("wb") as output:
                 output.write(data)
             destination.chmod(0o600)
             result = (key, kind, str(destination.resolve()), len(data), "ready", None)
-        except (BridgeError, OSError):
+        except (BridgeError, OSError) as error:
             if destination is not None:
                 destination.unlink(missing_ok=True)
             # Fixed messages prevent private URLs, file IDs or tokens entering records.
+            if isinstance(error, AttachmentReadError):
+                failure = str(error)
             result = (key, kind, None, None, "failed", failure)
         self.db.execute("INSERT INTO attachments VALUES (?,?,?,?,?,?)", result)
         return result[4] == "ready"
@@ -704,9 +753,16 @@ class Inbox:
                                "that part was not stored. Reword it without the secret if Chief needs it.")
             if has_attachment and not self._attachment(key, message, api, user["label"] == OWNER_LABEL, uid):
                 failure = self.db.execute("SELECT error FROM attachments WHERE request_id=?", (key,)).fetchone()[0]
-                notices.append("Your message is saved, but the attachment was not received. " + failure)
+                # Chief receives the error with the original request and can ask for a
+                # missing image if it matters. Offline, give one notice for a burst.
+                connected = self.meta("appserver_enabled") == "1" and self.meta("appserver_health") == "connected"
+                if not connected and not self.db.execute(
+                        "SELECT 1 FROM outbox WHERE chat_id=? AND created>=? AND id LIKE 'ack:%' "
+                        "AND status IN ('pending','sending','sent','uncertain') AND instr(body,?)>0 LIMIT 1",
+                        (cid, time.time() - ATTACHMENT_NOTICE_INTERVAL, failure)).fetchone():
+                    notices.append(failure)
             else:
-                self.receipt(cid, message.get("message_id"))  # A failed file gets its notice, not a receipt.
+                self.receipt(cid, message.get("message_id"))
             if notices:
                 try:
                     self.reply("ack:" + key, cid, "\n".join(notices))

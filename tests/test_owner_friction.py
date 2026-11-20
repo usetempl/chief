@@ -12,7 +12,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import wave
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,7 +36,7 @@ from alfred_projects import TOOL_NAME as ROUTE_TOOL
 from alfred_report import report
 from alfred_tasks import due_tasks
 from operator_policy import CONTACT_LABEL, OWNER_LABEL, TURN_SETTINGS
-from telegram_bridge import BridgeError, Inbox, MAX_ATTACHMENT, MAX_ATTACHMENT_STORAGE
+from telegram_bridge import AttachmentReadError, BridgeError, Inbox, MAX_ATTACHMENT, MAX_ATTACHMENT_STORAGE
 
 COORDINATOR = "00000000-0000-4000-8000-0000000000c0"
 PROJECT_OWNER = "00000000-0000-4000-8000-0000000000a1"
@@ -414,6 +414,65 @@ class OutcomeDelivery(Base):
 
 
 class OwnerIntake(Base):
+    def test_falls_back_to_the_largest_downloadable_photo_and_receipts_it_once(self):
+        photo = [{"width": 100, "height": 80, "file_id": "small"},
+                 {"width": 1600, "height": 900, "file_id": "too-large", "file_size": MAX_ATTACHMENT + 1},
+                 {"width": 800, "height": 600, "file_id": "large"},
+                 {"width": 640, "height": 480, "file_id": "medium"}]
+        files = Mock()
+        files.download.side_effect = [AttachmentReadError("Telegram returned an incomplete file."), b"picture"]
+        update = message(1, text=None, caption="The pricing section", photo=photo)
+        self.inbox.ingest(update, files)
+        self.inbox.ingest(update, files)
+        self.assertEqual([call.args[0] for call in files.download.call_args_list], ["large", "medium"])
+        row = self.inbox.db.execute("SELECT * FROM attachments").fetchone()
+        self.assertEqual((row["status"], row["size"], Path(row["local_path"]).read_bytes()), ("ready", 7, b"picture"))
+        self.assertEqual(self.inbox.db.execute("SELECT COUNT(*) FROM reactions WHERE message_id=1").fetchone()[0], 1)
+        self.assertFalse(self.inbox.db.execute("SELECT 1 FROM outbox WHERE id LIKE 'ack:%'").fetchone())
+
+    def test_transient_single_version_retries_but_a_telegram_rate_limit_stops(self):
+        photo = [{"width": 900, "height": 600, "file_id": "one"}]
+        files = Mock()
+        files.download.side_effect = [OSError("private diagnostic"), b"picture"]
+        self.inbox.ingest(message(1, text=None, photo=photo), files)
+        self.assertEqual(files.download.call_count, 2)
+        files.download.reset_mock()
+        files.download.side_effect = AttachmentReadError("Telegram has paused file downloads. Please try again later.", 429)
+        self.inbox.ingest(message(2, text=None, photo=photo), files)
+        files.download.assert_called_once()
+        rows = self.inbox.db.execute("SELECT status,error FROM attachments ORDER BY request_id").fetchall()
+        self.assertEqual([row["status"] for row in rows], ["ready", "failed"])
+        self.assertIn("paused", rows[1]["error"])
+
+    def test_failed_photos_dispatch_without_resend_spam_and_offline_notices_are_grouped(self):
+        photo = [{"width": 300, "height": 200, "file_id": "sample"}]
+        files = Mock()
+        files.download.side_effect = BridgeError("private diagnostic")
+        with self.inbox.db:
+            self.inbox.set_meta("appserver_enabled", "1")
+            self.inbox.set_meta("appserver_health", "connected")
+        for number in range(1, 4):
+            self.inbox.ingest(message(number, text=None, caption=f"Image {number}", photo=photo), files)
+        self.assertFalse(self.inbox.db.execute("SELECT 1 FROM outbox WHERE id LIKE 'ack:%'").fetchone())
+        self.assertFalse(self.inbox.db.execute("SELECT 1 FROM reactions").fetchone())
+        self.assertEqual(self.inbox.db.execute("SELECT COUNT(*) FROM attachments WHERE status='failed' AND local_path IS NULL").fetchone()[0], 3)
+        row = self.inbox.db.execute("SELECT * FROM requests WHERE message_id=2").fetchone()
+        self.assertEqual(row["body"], "Image 2")
+        inputs = self.adapter.request_input(row, "test-dispatch")
+        self.assertEqual([item["type"] for item in inputs], ["text"])
+        self.assertIn("ask once for that picture", inputs[0]["text"])
+        self.assertNotIn("private diagnostic", inputs[0]["text"])
+        with self.inbox.db:
+            self.inbox.set_meta("appserver_health", "disconnected")
+        for number in range(4, 7):
+            self.inbox.ingest(message(number, text=None, photo=photo), files)
+        notices = self.inbox.db.execute("SELECT body FROM outbox WHERE id LIKE 'ack:%'").fetchall()
+        self.assertEqual([row["body"] for row in notices], ["The file download from Telegram was interrupted."])
+        with self.inbox.db:
+            self.inbox.db.execute("UPDATE outbox SET created=0 WHERE id LIKE 'ack:%'")
+        self.inbox.ingest(message(7, text=None, photo=photo), files)
+        self.assertEqual(self.inbox.db.execute("SELECT COUNT(*) FROM outbox WHERE id LIKE 'ack:%'").fetchone()[0], 2)
+
     def test_owner_replies_are_never_dropped_by_reply_counts_but_contacts_keep_them(self):
         with self.inbox.db:
             for chat in (OWNER, CONTACT) if HAS_CONTACT else (OWNER,):

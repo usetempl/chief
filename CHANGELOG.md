@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.3 — 2026-11-19
+
+- When the largest Telegram photo fails to download, Chief tries the next available size. If Telegram offers a single usable file, Chief retries a failed read once. A Telegram rate limit stops further attempts for that attachment.
+- Chief keeps each caption and records which files arrived. While connected, it asks for a missing picture only if the task needs it. While offline, the collector sends one notice per chat for the same download error within five minutes. File size warnings appear when a size check fails.
+
+Restart the Telegram collector to load this update.
+
 ## 0.7.2 — 2026-11-18
 
 - **One owner turn, several requests.** When different requests reach the same existing owner in one native turn, a final closes only the route it names with a `ROUTE_RESULT ROUTE-ID` line. A one-route final needs no label.
