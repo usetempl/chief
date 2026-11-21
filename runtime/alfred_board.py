@@ -3,8 +3,11 @@
 import argparse
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
+import stat
+import tempfile
 
 STATES = ("backlog", "todo", "doing", "blocked", "review", "done")
 HEADING = "## Movement history"
@@ -91,8 +94,91 @@ def finish_move(text, target, now=None, recovered=False):
     return append_history(PENDING.sub("", text), pending["from"], target, note, now)
 
 
+def read_card(path):
+    path = Path(path)
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
+        raise ValueError("A bounded regular task card is required")
+    if hasattr(os, "getuid") and (info.st_uid != os.getuid() or info.st_mode & 0o022):
+        raise ValueError("Task card must be owned by this user and not writable by others")
+    text = path.read_text(encoding="utf-8")
+    fields = {}
+    for line in text.splitlines():
+        match = re.match(r"^([A-Za-z][A-Za-z ]+): (.*)$", line)
+        if match:
+            if match[1] in fields and match[1] in {"Recurrence", "Next run", "Schedule driver", "Schedule owner", "Authority"}:
+                raise ValueError("Ambiguous schedule fields")
+            fields.setdefault(match[1], match[2])
+    return text, fields
+
+
+def save_move(path, state, text, *, expected=None, reason="Workflow transition", now=None):
+    """Rewrite one card atomically, then move it; refuse a second destination."""
+    path = Path(path)
+    original, _ = read_card(path)  # Missing/revoked sources must never be recreated.
+    if expected is not None and original != expected:
+        raise ValueError("Task changed; preserve the current card and reconcile")
+    root = path.parent.parent
+    if state not in STATES or path.parent.name not in STATES or root.name != "tasks":
+        raise ValueError("Use a card directly inside a canonical task column")
+    stamp(now)
+    if state == "blocked":
+        blocker(text)
+    if root.is_symlink() or path.parent.is_symlink() or (root / state).is_symlink():
+        raise ValueError("Task columns cannot be symlinks")
+    recovered = pending_move(original) is not None
+    text = prepare_move(text, path.parent.name, state, reason)
+    destination = root / state / path.name
+    pending = pending_move(original)
+    if destination == path and pending and pending["to"] == state and pending["from"] != state:
+        # Recovery may start at the destination after link succeeded but source
+        # unlink failed. Remove that exact same-inode source before rewriting;
+        # replacing the destination first would split one card into two copies.
+        source = root / pending["from"] / path.name
+        if source.exists() or source.is_symlink():
+            if source.parent.is_symlink():
+                raise ValueError("Task columns cannot be symlinks")
+            source_text, _ = read_card(source)
+            if not path.samefile(source) or source_text != original:
+                raise ValueError("Conflicting original card needs reconciliation")
+            source.unlink()
+    if destination != path and (destination.exists() or destination.is_symlink()):
+        # A crash after link but before unlink leaves the same card in both
+        # columns. Finish only that move, never overwrite an independent card.
+        read_card(destination)
+        if path.samefile(destination) and original == text:
+            path.unlink()
+            return save_move(destination, state, text, expected=text, now=now)
+        raise ValueError("A card with this name already exists in the destination")
+    destination.parent.mkdir(exist_ok=True)
+    if text != original:
+        fd, temporary = tempfile.mkstemp(prefix=".task-", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if read_card(path)[0] != original:
+                raise ValueError("Task changed before update; preserve it")
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+    if destination != path:
+        # Link the existing source; queueing never republishes cached text.
+        os.link(path, destination)
+        if read_card(destination)[0] != text:
+            destination.unlink()
+            raise ValueError("Task changed before move; preserve it")
+        path.unlink()
+    finished = finish_move(text, state, now=now, recovered=recovered)
+    if finished != text:
+        # The destination exists before its history claims a completed move.
+        # A crash leaves a recoverable marker, never a fabricated transition.
+        return save_move(destination, state, finished, expected=text, now=now)
+    return destination
+
+
 def main():
-    from alfred_tasks import read_card, save_move
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     move = commands.add_parser("move")

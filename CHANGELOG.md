@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 — 2026-11-20
+
+- **Breaking change.** Chief now runs directly in the existing Codex or Claude Code conversation. This version removes the Telegram bot, enrollment and delivery service, attachment and voice handling, service installers and relay commands.
+- Read all open cards or page through completed work from the native conversation or with the standalone Python report command. Existing Markdown cards, movement histories and recurring completion records are supported.
+- The [upgrade guide](docs/start.md#upgrade-an-existing-chief) covers private backups, outstanding deliveries and releasing the old service before opening the same conversation directly.
+
 ## 0.7.3 — 2026-11-19
 
 - When the largest Telegram photo fails to download, Chief tries the next available size. If Telegram offers a single usable file, Chief retries a failed read once. A Telegram rate limit stops further attempts for that attachment.

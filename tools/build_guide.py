@@ -10,15 +10,22 @@ SECTIONS = (
     ("dot.md", "Use Dot or mobile", "use-dot-or-mobile"),
     ("device.md", "Connect another device", "connect-another-device"),
     ("core.md", "Core instructions", "core-instructions"),
-    ("telegram.md", "Add Telegram", "add-telegram"),
 )
+
+
+def local_links(markdown):
+    for filename, _, anchor in SECTIONS:
+        target = r"\]\((?:docs/)?" + re.escape(filename)
+        markdown = re.sub(target + r"#([\w-]+)\)", r"](#\1)", markdown)
+        markdown = re.sub(target + r"\)", f"](#{anchor})", markdown)
+    return markdown
 
 
 def render():
     version = (ROOT / "VERSION").read_text().strip()
     readme = (ROOT / "README.md").read_text()
     quickstart = readme.split("## 🚀 Get started\n", 1)[1].split("## ⚙️ How it works\n", 1)[0].strip()
-    quickstart = quickstart.replace("](docs/telegram.md)", "](#add-telegram)")
+    quickstart = local_links(quickstart)
     parts = [
         "# Chief by Templ\n\nYour AI chief of staff. One private board for all your projects.\n\n"
         + quickstart + "\n\n"
@@ -27,11 +34,9 @@ def render():
         f"[Source and versions](https://github.com/usetempl/chief) · Guide version {version}\n\n"
         + " · ".join(f"[{title}](#{anchor})" for _, title, anchor in SECTIONS)
     ]
-    anchors = {name: anchor for name, _, anchor in SECTIONS}
     for name, title, _ in SECTIONS:
         body = (ROOT / "docs" / name).read_text().split("\n", 1)[1].strip()
-        for target, anchor in anchors.items():
-            body = body.replace(f"]({target})", f"](#{anchor})")
+        body = local_links(body)
         lines = []
         fenced = False
         for line in body.splitlines():
@@ -55,7 +60,7 @@ def main():
         target.write_text(expected)
     elif not target.is_file() or target.read_text() != expected:
         raise SystemExit("Entry guide differs; review sources, then run tools/build_guide.py --write")
-    print("Verified complete static guide from five source documents")
+    print(f"Verified the guide built from {len(SECTIONS)} source documents")
 
 
 if __name__ == "__main__":

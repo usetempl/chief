@@ -1,16 +1,12 @@
-"""Complete saved kanban, paginated for Telegram without model or live-agent calls."""
+#!/usr/bin/env python3
+"""Show the open board or a page of completed work from saved Markdown cards."""
+
+import argparse
 from datetime import datetime
 from pathlib import Path
 import re
 
-from operator_policy import WORKSPACE as ROOT
-
 from alfred_board import STATES
-
-
-def active_claude():
-    """Compatibility for collectors started before the saved-only report update."""
-    return None
 
 
 def compact(text):
@@ -82,7 +78,7 @@ def line(row, number):
     return f"{number}. {compact(row['name'])}{parked}{recurring} — {review}{next_step}"
 
 
-def report(root=ROOT, db=None, live_claude=None):
+def report(root):
     """Every open card, starting at BACKLOG. Completions belong to /done."""
     rows = cards(root)
     lines = []
@@ -106,17 +102,7 @@ def report(root=ROOT, db=None, live_claude=None):
                 lines.append(line(row, task_number))
         if not current:
             lines.append("• None")
-    if db is not None and db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='appserver_dispatch'").fetchone():
-        count = db.execute("SELECT COUNT(*) FROM appserver_dispatch d JOIN requests r ON r.id=d.request_id "
-                           "WHERE (d.error LIKE 'recovery_required:%' OR d.state IN ('rejected','uncertain')) "
-                           "AND r.status IN ('pending','processing')").fetchone()[0]
-        issues = db.execute("SELECT COUNT(*) FROM outbox WHERE status IN ('failed','uncertain')").fetchone()[0]
-        notes = ([f"{issues} repl{'y' if issues == 1 else 'ies'} not confirmed as delivered" ] if issues else []) + (
-            [f"{count} message{'' if count == 1 else 's'} whose processing ended without a recorded reply"] if count else [])
-        if notes:
-            lines.append("\nNeeds Chief's review: " + "; ".join(notes) + ". Nothing is resent or repeated automatically; "
-                         "Chief closes each one only with evidence.")
-    lines.append("\nAll open cards are included. Completions: /done. No live checks or model calls.")
+    lines.append("\nUse /done to see completed work.")
     return "\n".join(lines)
 
 
@@ -128,7 +114,7 @@ def completed(rows):
                   key=lambda row: (stamp(row), row["path"]), reverse=True), stamp
 
 
-def done(root=ROOT, page=1):
+def done(root, page=1):
     """One saved page of /done. Pages are 1-based; an unavailable page is answered locally."""
     rows, stamp = completed(cards(root))
     pages = max(1, -(-len(rows) // DONE_PAGE))
@@ -146,11 +132,22 @@ def done(root=ROOT, page=1):
         lines.append("• None")
     navigation = ([f"Previous: /done {page - 1}" if page > 2 else "Previous: /done"] if page > 1 else []) + \
                  ([f"Next: /done {page + 1}"] if page < pages else [])
-    lines.append("\n" + (" · ".join(navigation) if navigation else "No more pages.") + " Saved records only; no model calls.")
+    lines.append("\n" + (" · ".join(navigation) if navigation else "No more pages.") + "")
     return "\n".join(lines)
 
 
-def report_pages(root=ROOT, db=None):
-    """Never drop cards to fit one message; each page stays within Telegram's UTF-16 limit."""
-    from telegram_bridge import reply_parts
-    return reply_parts("result:report:preview", report(root, db))
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=Path.cwd(), help="Private workspace containing tasks/")
+    commands = parser.add_subparsers(dest="command")
+    commands.add_parser("report", help="Show every open card")
+    finished = commands.add_parser("done", help="Show completed work, newest first")
+    finished.add_argument("page", nargs="?", default=1, type=int)
+    args = parser.parse_args()
+    if not (args.root / "tasks").is_dir():
+        parser.error("The workspace must contain a tasks directory.")
+    print(done(args.root, args.page) if args.command == "done" else report(args.root))
+
+
+if __name__ == "__main__":
+    main()

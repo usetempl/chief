@@ -1,71 +1,35 @@
 # Chief
 
-Your AI chief of staff, made by [Templ](https://usetempl.com).
-
-Coordinate your existing AI leads across projects and track their work on one private board.
+Chief by [Templ](https://usetempl.com) coordinates your existing project leads from one conversation in Codex or Claude Code. Each project keeps its owner. One private Markdown board records the assignments, open decisions and verified results.
 
 ## 🚀 Get started
 
-1. **Install on your main computer**
-
-   Open your signed-in Codex and paste:
+1. **Open Chief on your main computer.** Open your existing Chief conversation in your signed-in app. For a first installation, open a conversation with file access and send this prompt.
 
    ```text
-   Read https://usetempl.com/chief. Set up Chief on this computer.
+   Read https://github.com/usetempl/chief/blob/main/docs/start.md and set up Chief in a separate private workspace on this computer.
    ```
 
-   Codex helps you choose a nickname and create your first private board.
+2. **Ask for work in that conversation.** Give Chief a goal and any release limits. Chief can send the brief to the existing lead through a supported native tool and bring the result back to you.
 
-2. **Reach Chief from your phone through Dot**
+3. **Continue from another device.** Use a supported, authenticated connection to the host. Open the same conversation and verify that a message sent from the device gets an answer there. [Device setup](docs/device.md)
 
-   In Dot, paste:
-
-   ```text
-   Read https://usetempl.com/chief. Connect Dot to my existing Chief through my authenticated host command tool. Use the installed submit/result commands and return the saved answer "Dot connection confirmed" here.
-   ```
-
-   Dot needs authenticated command access to the host. Your host must stay awake and online. Setup is complete when the saved answer returns to your phone.
-
-3. **Add devices and assign work**
-
-   Open Codex on the new device and paste:
-
-   ```text
-   Read https://usetempl.com/chief. Connect this device to my existing Chief. Check its tools and ask which work it should handle.
-   ```
-
-   Then tell Chief: “Use my desktop for renders. Run the website project on my laptop.” Chief keeps each project's lead and uses verified device access.
-
-4. **Check your board in Telegram**
-
-   After [connecting your own bot](docs/telegram.md), send:
-
-   ```text
-   /report
-   /done
-   ```
-
-   `/report` lists every open card, grouped by project lead. `/done` lists completions, 20 per page (`/done 2` for the next page). Neither makes a model call or uses AI tokens.
+4. **Read your board.** Ask Chief for `/report` to list every open card or `/done 2` for the second page of completions. You can also read the board locally with Python. The report script makes no model or network calls. [Board commands](docs/core.md#read-the-board)
 
 ## ⚙️ How it works
 
-The core uses Markdown instructions and records. Your Codex model decides where work goes. Chief adds no planning engine, vector database or model server.
-
-| Layer | What runs |
+| Where | What it holds |
 | --- | --- |
-| **Coordinator** | One Codex thread reads instructions, `projects.md` and relevant cards, then answers or chooses an existing lead. |
-| **Project leads** | Each project keeps its thread, repository and tools. Chief sends a focused brief. The lead returns a result or blocker. |
-| **Board** | `tasks/<column>/*.md` holds each task. **Backlog** holds ideas, **Todo** committed work, **Doing** active work, **Blocked** work missing a named input, **Review** human decisions, and **Done** verified outcomes. Moves retain timestamps. |
-| **Memory** | Codex handles context and compaction. Markdown keeps durable facts. Project owners keep detailed evidence. Private Git backups are optional. Chief reads relevant records. |
-| **Telegram · optional** | Python 3.12+, its standard library and pinned `websockets` connect to Codex's app-server. Enrollment controls access. SQLite holds requests, the outbox and delivery receipts. |
-| **Reports & replies** | `/report` and `/done` read saved cards without model calls. `markdown-it-py` parses reply formatting into Telegram entities. Numbered parts retain their styles and delivery receipts. |
+| Chief conversation | Your request, one brief for the appropriate lead, and the result or decision you need. |
+| Project owner's conversation | Implementation, tools, checks and release evidence for that project. |
+| Private workspace | Project owners in `projects.md`, release and access rules in `priorities.md`, and one file per task in `tasks/`. The folder records its status. |
 
-![Chief by Templ: request flow, project leads, board and memory](docs/architecture.png)
+The signed-in app supplies the model and enforces permissions. The board works with ordinary file tools. Optional Python helpers prepare a new workspace, report on cards and record moves.
 
-[Technical details](docs/architecture.md) · [Add Telegram](docs/telegram.md) · [Connect another device](docs/device.md)
+[Setup guide](docs/start.md) · [How work moves through Chief](docs/architecture.md) · [Full guide](docs/entry.md)
 
 ## 🔖 Versions
 
-This repo is Chief's source of truth. Reusable improvements ship here, with `vX.Y.Z` Git tags, a matching `VERSION` and a [changelog](CHANGELOG.md). Updating source does not overwrite an existing installation.
+Each source release has a Git tag, a matching `VERSION` and a [changelog](CHANGELOG.md). If you use an earlier release, follow the [upgrade instructions](docs/start.md#upgrade-an-existing-chief) to keep your private board and project owners.
 
-MIT licensed. Your private board, accounts and history stay outside this repo.
+MIT licensed.

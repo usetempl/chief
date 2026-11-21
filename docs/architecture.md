@@ -1,33 +1,20 @@
-# Chief by Templ
+# How Chief works
 
-![Chief request flow, projects, board and memory](architecture.png)
+Chief runs in one existing Codex or Claude Code conversation. The app supplies sign-in, model access, tools and approvals. Tasks and project ownership live in a separate private workspace.
 
-[Editable Mermaid](architecture.mmd)
+```mermaid
+flowchart LR
+    User["You in the signed-in app"] <-->|"Request and answer"| Chief["Existing Chief conversation"]
+    Chief <-->|"Brief and verified outcome"| Lead["Existing project owner"]
+    Lead --> Project["Project repo and tools"]
+    Chief <-->|"Read and update"| Board["Private Markdown board"]
+    Report["Local report command"] -->|"Read only"| Board
+```
 
+1. You ask Chief for an outcome in the native conversation. Chief reads the relevant card, the project registry and the applicable release rules.
+2. For project work, Chief briefs the existing lead through an authorized native tool. The lead checks the result in the project’s own workspace. If a browser is needed, the lead uses its assigned tab and profile.
+3. Chief records the result or missing input on the original task card and replies in your conversation. If a handoff was interrupted, Chief checks the card and the owner’s saved result before retrying.
 
-Chief is instructions and a private task board. The model decides how to handle a request and which existing project owner should execute it. Small adapters authenticate senders, preserve requests and deliver replies. There is no model-ranking or planning engine.
+For a board report, Chief reads the saved cards. You can also run the read-only report directly from a shell. Native conversation history stays in the app. The board, including dated decisions and file references, remains readable with ordinary file tools.
 
-The image includes the optional adapter path. The plain-file core needs no Python or SQLite. The adapter implementation was checked on November 16, 2026. It describes resource types, not measured CPU, RAM, token savings or a fixed number of model calls. The optional adapter has its own setup; cloning source does not create a bot, service, enrollment or backup.
-
-| Step | Component and actual work | Resources |
-| --- | --- | --- |
-| Receive | `telegram_bridge.py`, `alfred_local.py` verifies the caller and persists the request. | Local Python, network transport, private files and SQLite. No model needed for authentication. |
-| Prepare | `alfred_appserver.py` builds attributed input from the message, the relevant replied-to part and supported attachments. | Local CPU/disk; image input consumes model context. The configured local audio decoder uses on-device CPU/GPU; readable transcripts become text context. |
-| Decide | The same continuing Chief Codex thread answers directly or chooses the registered owner from relevant instructions/cards. | Your existing Codex model settings, its current context, and requested tools. Chief does not set a task deadline or token budget. |
-| Execute | `alfred_projects.py` delivers one brief to the existing owner, which keeps its own model, thread and tools. Each owner gets its own background browser tab session (`alfred_browser.py`). | Owner context, repository, build/test tools, permitted services and any useful specialists. Native UI requires a real handoff when occupied. |
-| Record | Chief receives a completed outcome or necessary missing input, then updates the card and links project evidence. When Chief elects direct return, the owner's native final answer, matching its staged candidate, is sent instead. | Chief context, local file I/O, route receipts in SQLite and one reviewed, on-demand private Git checkpoint per batch (`alfred_checkpoint.py`). |
-| Deliver | The exact-request reply enters the outbox; the collector sends its complete parts and records receipts. | Local Python/SQLite and Telegram API calls; no model needed to transmit saved text. |
-
-The owner's `/report` and `/done` take a shorter path: read the saved cards, render text, then use the same outbox. It makes no model or live-project calls. Idle transport polling also makes no model calls. Only explicitly authorized due tasks can create scheduled work.
-
-The model's working context includes supplied instructions, conversation or compaction summaries, and tool results. Codex manages its context window. Chief resumes or steers the same thread; it does not start an empty context for each message. A short new brief can therefore enter a large existing context. Selective reads reduce additional context; they do not erase previous turns.
-
-Durable task facts live in Markdown cards, whose folder is their status. Each card links evidence and records timestamped moves. SQLite separately stores sender attribution, requests, dispatch IDs, owner outcomes and delivery receipts so reconnection does not blindly repeat actions. It is not a semantic-memory database.
-
-Project owners keep their own contexts and detailed evidence. Optional Codex-supplied memory summaries/files are hints to verify against current facts. Chief adds no separate vector store or automatic memory learner. If configured by the operator, private Git preserves instructions, cards, reports and scoped sanitized user/assistant exports; the archive is not routinely injected into requests. Git does not restore live databases, credentials, sessions or media.
-
-After restart or compaction, resume the existing thread, read the current card and necessary evidence, and reconcile accepted actions against the ledger. The adapter's next dispatch carries the full assignments capsule from the ledger and board; warm dispatches carry only its changes. A saved request, completed task and delivered answer are different facts. Unknown or uncertain delivery is not silently retried.
-
-Backlog holds uncommitted ideas. Todo is committed next work or a scheduled recurrence. Doing means active execution. Review names a human decision. Done records a verified outcome. Testing, deployment and human acceptance remain separate.
-
-For the prompt audit, read [the core](core.md), [onboarding](start.md), then the installation's private instructions, priorities, owner registry, relevant cards and adapter attribution rules. Public guides contain no private records, invitations, credentials or device bindings.
+[Board commands](core.md#read-the-board) · [Diagram source](architecture.mmd)

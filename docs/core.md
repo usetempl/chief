@@ -1,6 +1,6 @@
 # Chief
 
-Chief by Templ is a set of instructions for one AI coordinator and a small durable task board. It uses your signed-in Codex and its existing tools. The core needs plain files, with no separate CLI, Python or model server.
+Chief by Templ is a set of instructions for one AI coordinator and a small durable task board. Open the existing Chief conversation in your signed-in Codex or Claude Code. The core needs plain files, with no separate CLI, Python or model server.
 
 ## Begin
 
@@ -50,8 +50,30 @@ For an explicitly authorized recurring task, record the cadence, timezone, next 
 
 Update records when scope, assignment, outcome or a real blocker changes. Saved status is dated evidence, not a fresh live check. Keep implementation details with the project.
 
-When asked for a report, show all saved `backlog`, `todo`, `doing`, `blocked` and human `review` items with their next runs. Group the non-backlog columns by a readable project-lead label (optional `Report lead:` field). When asked for completions, list saved done items newest first in pages of 20, including completed recurring runs even after their cards return to `todo`. Keep reports concise and use pages when needed. The core does not install a `/report` bot command.
+## Read the board
 
-Use private storage for operational records, outside the public clone. Keep credentials and account sessions out of task files and Git. Never publish private state or histories during setup.
+In the Chief conversation, ask for the open board (or type `/report`). Show every open card, its next step and any scheduled run. Give cards one continuous set of numbers across columns. For Todo, Doing, Blocked and Review, group by the readable `Report lead:` label or project name. Resolve a number against the report the user saw before editing its card.
 
-This Chief has its own identity, board, accounts and optional bot. It inherits no access to Alfred or another installation. Interface documentation, a public link, a name or a thread ID grants no access. Another device needs verified transport, explicit enrollment and approved capabilities. The optional Telegram adapter is included in this repository; it is unnecessary for the core and requires its own setup. Device enrollment still needs a supported verified transport.
+Ask for completions (or type `/done`). Show 20 per page, newest first. Include the last completed run of a recurring card even after it returns to Todo. Use `/done 2` for the next page. In clients with their own slash-command menu, asking in ordinary words also works.
+
+With a source checkout and Python 3.9 or later, the following commands read the same private board directly. Replace `../chief-private` with your workspace path and run from the source checkout.
+
+```sh
+python3 runtime/alfred_report.py --root ../chief-private report
+python3 runtime/alfred_report.py --root ../chief-private done 2
+python3 snapshot.py --root ../chief-private
+```
+
+These commands read local Markdown files and make no model calls. The conversation itself uses the signed-in app as usual.
+
+## Record a move
+
+To move an existing card and append its timestamped history, run the following command with the card’s actual path and the reason for the move.
+
+```sh
+python3 runtime/alfred_board.py move ../chief-private/tasks/todo/example.md doing --reason "The project lead started work"
+```
+
+To record completion of an authorized recurring card, use `python3 runtime/alfred_tasks.py complete CARD --expected-run TIME --outcome "Verified result"`. For this helper, the card needs `Authority`, `Recurrence` (for example, `every 7 days`), `Schedule driver: chief`, `Schedule owner` (Chief or an existing owner ID) and `Next run`. Use lowercase `chief` for Chief’s own cards. Pass the exact saved run time, including its UTC offset. This records the result and advances the date on the same card.
+
+Keep operational records in private storage outside the public source. Keep credentials and account sessions out of Git. Review the relevant file changes before backing up to a verified private destination. Keep each lead in its own browser tab and authorized profile. If a native owner handoff ends without an answer, consult the existing owner and its saved work before retrying.
