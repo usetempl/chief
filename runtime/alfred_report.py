@@ -3,10 +3,12 @@
 
 import argparse
 from datetime import datetime
+import json
 from pathlib import Path
 import re
 
 from alfred_board import STATES
+from alfred_handoff import PREFIX as HANDOFF_PREFIX
 
 
 def compact(text):
@@ -17,21 +19,33 @@ def compact(text):
 def cards(root):
     rows = []
     for state in STATES:
-        for path in sorted((Path(root) / "tasks" / state).rglob("*.md")):
+        column = Path(root) / "tasks" / state
+        for path in sorted(column.rglob("*.md")):
             if path.name.lower() == "readme.md":
                 continue
             fields = {}
+            pending = []
             try:
                 content = path.read_text(encoding="utf-8")
                 title = next((line[2:] for line in content.splitlines() if line.startswith("# ")), path.stem)
                 for line in content.splitlines():
+                    if line.startswith(HANDOFF_PREFIX):
+                        try:
+                            item = json.loads(line[len(HANDOFF_PREFIX):])
+                            status = item["attempts"][-1]["status"]
+                            if status != "returned":
+                                pending.append(f"{item['key']} {status}")
+                        except (ValueError, KeyError, IndexError, TypeError):
+                            pending.append("check the saved assignment")
+                        continue
                     match = re.match(r"^([^:]+):\s*(.*)$", line)
                     if match:
                         fields.setdefault(match[1], match[2])
             except (OSError, UnicodeError):
                 title = path.stem
                 fields["Next"] = "Unreadable card; repair the saved record."
-            fields.update(state=state, name=fields.get("Report name") or title, path=str(path))
+            fields.update(state=state, name=fields.get("Report name") or title, path=str(path),
+                          ref=path.relative_to(column).as_posix(), pending=pending)
             rows.append(fields)
     return rows
 
@@ -75,7 +89,8 @@ def line(row, number):
                   + compact(row.get("Resolver") or "not recorded") + ". ")
     parked = " [parked]" if row.get("Project mode") == "parked" else ""
     recurring = " [recurring; next " + compact(row.get("Next run", "not set")) + "]" if row.get("Recurrence") else ""
-    return f"{number}. {compact(row['name'])}{parked}{recurring} — {review}{next_step}"
+    handoffs = " · Owner handoff " + ", ".join(row["pending"]) if row["pending"] else ""
+    return f"{number}. {compact(row['name'])}{parked}{recurring} — {review}{next_step}{handoffs} · {row['ref']}"
 
 
 def report(root):
@@ -127,7 +142,7 @@ def done(root, page=1):
         when = stamp(row)
         date = when.strftime("%Y-%m-%d") if when != datetime.min else "date unknown"
         summary = compact(row.get("Last done") or row.get("Snapshot") or "Outcome not recorded")
-        lines.append(f"{number}. {compact(row['name'])} ({date}) — {summary}")
+        lines.append(f"{number}. {compact(row['name'])} ({date}) — {summary} · {row['ref']}")
     if not rows:
         lines.append("• None")
     navigation = ([f"Previous: /done {page - 1}" if page > 2 else "Previous: /done"] if page > 1 else []) + \

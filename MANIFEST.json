@@ -1,24 +1,25 @@
 {
-  "version": "0.8.0",
+  "version": "0.8.1",
   "files": {
     "AGENTS.md": "0b08e7cb46010cd91d1b31c5eb1dd3d299d9e2e3605240fac9a42b33af97de71",
-    "CHANGELOG.md": "15fc81db51332b64b443707ec2dcf9e2dc897515831a747e49893a8ef1740696",
+    "CHANGELOG.md": "9f8d40818b9c0031ce63b2c957c1933fe2d976ff3cf0c29b1fc8e6e1066b72ca",
     "LICENSE": "09b38d3c08d47cb2bce87b85b48d62a42cfa99aed36025b957a6467b43437d2c",
     "README.md": "ae175d09a02ad5c14dc4af2e6035521a0cacb53d709a41dc1f779886d22fd67d",
-    "VERSION": "a66780da23103beaf12432b418508966b31a2a3a787f9468a5b6cdaa8667c1ef",
-    "docs/architecture.md": "421e1aea5247923aa763979cdc40b6629c63d7d6834da62b41b2134d9bc1ab4d",
+    "VERSION": "aaf6721dc37c40b4233accfc081f25776ff3bd1d2a4b9d5cea760d1c2cf86665",
+    "docs/architecture.md": "c73304f18d4db691663fbd61b55c56c439e595e96bce7cf5387854d134c2bd68",
     "docs/architecture.mmd": "b067552f8e3bbc5780275feb44b0d1b0d0b5e97d658740576a0d92d79bf3beb3",
-    "docs/core.md": "500a6eedf72123d8e58f58bea8a51317d92d1506a0b06d4291479b5a997b620e",
+    "docs/core.md": "7c75130831db61af69eaf9e61786db4f4c515622d2c68072009e31204aa6f20f",
     "docs/device.md": "11012e55d9cb02bb7ee3db37243b23a43f55f71c6910a75807d45c40891a3e23",
     "docs/dot.md": "b1a014d5d3e14a2af400755c764819d0075731ece5ec5ee710b80fbb687dd4b5",
-    "docs/entry.md": "37925c10b0f13abc184b23e665bb39773479144de23212bfa26ab82f862f3df8",
-    "docs/start.md": "04a264a68cd3a7350ef523dbefe17ff155f5e5b407aafdf76c5c68ef36ddfc6a",
-    "onboard.py": "d00caa2d746ab74275d8e4595563f6751ff401e2bd01b96b85a8099d5566c826",
-    "runtime/alfred_board.py": "d6c84a4378a1d9ded494816db76b89a685fbb8178a9daf3a38d96b57fb0174d0",
-    "runtime/alfred_report.py": "384b7bc381654a6f7baba6cf0699ae79f4956cad6b1cecd0cf563af13b82e5ed",
-    "runtime/alfred_tasks.py": "fe50a41ef7fa9f6a591879c0d5d94c1c054e040ecdb6fbc7f53d1e12969425bd",
+    "docs/entry.md": "15d8bf9c48e6cc6783efbe60ffa1e500109e07dfb2fd577f26caf58dbc1dbf55",
+    "docs/start.md": "cabae9d742a80095a2b52a4f979c191f7b6c285cfcc3fbccfaa63a8f2135ea4d",
+    "onboard.py": "a20e87237d45b36256362e13e1bbb10a80849b8d0540323e64a42041c305c7d9",
+    "runtime/alfred_board.py": "a0443b4022fa15ea275fd04c5d0626403a39aa85f40ede8c6b26d693547b52fe",
+    "runtime/alfred_handoff.py": "c4b336d3ffb1ee0cc483b345ed514a8e248df14e7ebc1ba303068692a0a8db78",
+    "runtime/alfred_report.py": "91254aaf26acbbfed456de1d78af3c9fb142ec7d23172c972c99124bf262976c",
+    "runtime/alfred_tasks.py": "19853b2d97de7ac485da10aed4ba5cd3313226cda724650ce95c3cbe9f85a1ed",
     "snapshot.py": "0fc7a97f58dd96b1d3d25db51eea0ff200d0172b433c3495e54ae973c8079767",
     "tools/build_guide.py": "259e73a73010c0ea32df473689f85f0d591febb147b10d0b639b7d5359a49123",
-    "tools/manifest.py": "9ae808feb6bb82384301a6ed221ceca835724ee21ac820fc9f1423f614624ee5"
+    "tools/manifest.py": "de8271e90e5e7436349152645bed44aa5fe803d9cc3291f43eda3720fabd9e08"
   }
 }

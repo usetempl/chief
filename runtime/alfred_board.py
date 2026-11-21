@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Move the existing card and keep a small, timestamped history inside it."""
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import os
@@ -99,8 +100,10 @@ def read_card(path):
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
         raise ValueError("A bounded regular task card is required")
-    if hasattr(os, "getuid") and (info.st_uid != os.getuid() or info.st_mode & 0o022):
-        raise ValueError("Task card must be owned by this user and not writable by others")
+    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+        raise ValueError("Ask the owner of this card to make the change in their private workspace.")
+    if hasattr(os, "getuid") and info.st_mode & 0o022:
+        raise ValueError("Group or other users can write this card. For your own private card, review it and run chmod go-w CARD. For a shared card, keep its permissions and ask the owner for a private copy.")
     text = path.read_text(encoding="utf-8")
     fields = {}
     for line in text.splitlines():
@@ -112,8 +115,58 @@ def read_card(path):
     return text, fields
 
 
+def write_card(path, original, text):
+    """Replace an edited card while the caller holds its board lock."""
+    if original == text:
+        return
+    if len(text.encode("utf-8")) > 65536:
+        raise ValueError("Keep the full result in a private file and record its reference on the card")
+    fd, temporary = tempfile.mkstemp(prefix=".task-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if read_card(path)[0] != original:
+            raise ValueError("Task changed before update; preserve it")
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+@contextmanager
+def board_lock(tasks):
+    """Serialize card updates and moves across local processes. Closing the fd releases the lock."""
+    tasks = Path(tasks)
+    if tasks.name != "tasks" or tasks.is_symlink() or not tasks.is_dir():
+        raise ValueError("Use the original workspace's tasks directory")
+    private = tasks.parent / ".private"
+    private.mkdir(mode=0o700, exist_ok=True)
+    lock = private / "board.lock"
+    if private.is_symlink() or lock.is_symlink():
+        raise ValueError("The board lock must be in the private workspace")
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("The board lock must be a regular file")
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def save_move(path, state, text, *, expected=None, reason="Workflow transition", now=None):
     """Rewrite one card atomically, then move it; refuse a second destination."""
+    with board_lock(Path(path).parent.parent):
+        return _save_move(path, state, text, expected=expected, reason=reason, now=now)
+
+
+def _save_move(path, state, text, *, expected, reason, now):
     path = Path(path)
     original, _ = read_card(path)  # Missing/revoked sources must never be recreated.
     if expected is not None and original != expected:
@@ -148,21 +201,10 @@ def save_move(path, state, text, *, expected=None, reason="Workflow transition",
         read_card(destination)
         if path.samefile(destination) and original == text:
             path.unlink()
-            return save_move(destination, state, text, expected=text, now=now)
+            return _save_move(destination, state, text, expected=text, reason=reason, now=now)
         raise ValueError("A card with this name already exists in the destination")
     destination.parent.mkdir(exist_ok=True)
-    if text != original:
-        fd, temporary = tempfile.mkstemp(prefix=".task-", dir=path.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                stream.write(text)
-                stream.flush()
-                os.fsync(stream.fileno())
-            if read_card(path)[0] != original:
-                raise ValueError("Task changed before update; preserve it")
-            os.replace(temporary, path)
-        finally:
-            Path(temporary).unlink(missing_ok=True)
+    write_card(path, original, text)
     if destination != path:
         # Link the existing source; queueing never republishes cached text.
         os.link(path, destination)
@@ -174,7 +216,7 @@ def save_move(path, state, text, *, expected=None, reason="Workflow transition",
     if finished != text:
         # The destination exists before its history claims a completed move.
         # A crash leaves a recoverable marker, never a fabricated transition.
-        return save_move(destination, state, finished, expected=text, now=now)
+        return _save_move(destination, state, finished, expected=text, reason=reason, now=now)
     return destination
 
 
@@ -205,4 +247,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (OSError, ValueError, KeyError) as error:
+        raise SystemExit(str(error))

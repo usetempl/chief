@@ -11,6 +11,8 @@ from alfred_board import pending_move, read_card, save_move
 
 
 def timestamp(raw):
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
     value = datetime.fromisoformat(raw)
     if value.tzinfo is None:
         raise ValueError("Run times need an explicit UTC offset")
@@ -47,7 +49,7 @@ def replace_fields(text, updates):
     return text
 
 
-def complete(path, outcome, now=None, *, expected_run):
+def complete(path, outcome, now=None, *, expected_run, early_authority=None):
     """Advance the recorded occurrence only after the operator verifies its outcome."""
     path = Path(path)
     original_path = path
@@ -70,21 +72,28 @@ def complete(path, outcome, now=None, *, expected_run):
         return save_move(path, "todo", text, expected=text, reason="Recurring occurrence completed", now=now)
     if path != original_path:
         raise ValueError("Original card is absent; no matching completion receipt")
+    if path.parent.name == "todo" and fields["Next run"] == expected_run:
+        raise ValueError("Move this authorized Todo card to Doing with alfred_board.py move CARD doing --reason REASON as work starts. Verify the result before completing it.")
     if fields["Next run"] != expected_run or path.parent.name not in {"doing", "review", "done"}:
         raise ValueError("Only the exact current occurrence can be completed")
     if not outcome.strip():
         raise ValueError("A verified completion outcome is required")
     now = datetime.now(timezone.utc) if now is None else now
-    if now.tzinfo is None or now < due:
-        raise ValueError("Completion cannot precede its due occurrence")
+    if now.tzinfo is None:
+        raise ValueError("Completion time needs a UTC offset")
+    if now < due and not (early_authority and early_authority.strip()):
+        raise ValueError("Counting an early run requires the operator's explicit --early-authority REQUEST-REF for this occurrence.")
     step = timedelta(days=days)
-    following = due + step * (int((now - due) // step) + 1)
+    following = due + step * (max(0, (now - due) // step) + 1)
     stamp = now.astimezone(due.tzinfo).isoformat(timespec="seconds")
+    authority = early_authority.strip() if now < due else fields["Authority"]
     updated = replace_fields(text, {"Next run": following.isoformat(timespec="seconds"),
                                 "Last run": expected_run, "Last occurrence": occurrence(path, fields),
+                                "Last completion authority": authority,
                                 "Last completed": stamp, "Last done": outcome,
                                 "Updated": stamp, "Next": "Run at the next scheduled date within the existing scope."})
-    return save_move(path, "todo", updated, expected=text, reason="Recurring occurrence completed", now=now)
+    reason = "Recurring occurrence completed" if now >= due else "Early occurrence completed under " + authority
+    return save_move(path, "todo", updated, expected=text, reason=reason, now=now)
 
 
 def main():
@@ -93,9 +102,14 @@ def main():
     parser.add_argument("card", type=Path)
     parser.add_argument("--expected-run", required=True)
     parser.add_argument("--outcome", required=True)
+    parser.add_argument("--early-authority", metavar="REQUEST-REF",
+                        help="Operator's explicit request to count this run as the named future occurrence")
     args = parser.parse_args()
-    print(complete(args.card, args.outcome, expected_run=args.expected_run))
+    print(complete(args.card, args.outcome, expected_run=args.expected_run, early_authority=args.early_authority))
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (OSError, ValueError, KeyError) as error:
+        raise SystemExit(str(error))

@@ -11,7 +11,7 @@ RELEASE_FILES = (
     "docs/architecture.md", "docs/architecture.mmd", "docs/core.md", "docs/device.md",
     "docs/dot.md", "docs/entry.md", "docs/start.md",
     "onboard.py", "snapshot.py", "runtime/alfred_board.py", "runtime/alfred_report.py",
-    "runtime/alfred_tasks.py", "tools/build_guide.py", "tools/manifest.py",
+    "runtime/alfred_tasks.py", "runtime/alfred_handoff.py", "tools/build_guide.py", "tools/manifest.py",
 )
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--write", action="store_true")

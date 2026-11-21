@@ -17,6 +17,8 @@ python3 onboard.py --directory ../chief-private --driver codex --history no --no
 
 For Claude Code, use `--driver claude`. The helper requires an unused destination. It creates the private board without reading conversation history or starting a model. Open that workspace in the app and ask Chief to read `COORDINATOR.md` to continue.
 
+Incident remediation has no standing grant at setup. To opt in, the operator can write the exact scope into the private `priorities.md` or supply `--incident-grant-file FILE` during setup. Use separate `Project:`, `Target:` and `Actions:` lines in the file. Include every restriction and notice or approval term. The helper saves that text in the new workspace. Both drivers use the same core guide.
+
 ## Upgrade an existing Chief
 
 Version 0.8.0 removes the Telegram service and its local relay commands. The same Markdown board and owner records work in the native conversation.
@@ -25,5 +27,7 @@ Version 0.8.0 removes the Telegram service and its local relay commands. The sam
 2. If the old service is running, arrange a handover with its operator. Let active work finish, then stop its collector and disable its automatic startup using the service manager that runs it. This releases its hold on the Chief conversation. Updating this source checkout alone does not stop an installed service.
 3. Open the existing conversation and workspace in the signed-in app. In its private operating instructions, replace directions for the retired service with instructions to read the original cards, send briefs using native owner tools, and answer in this conversation. Preserve the workspace’s own permissions, project owners and release rules. Prior enrollment alone does not grant access through the app.
 4. Ask for the open board and check a known card and its owner. For a phone or another computer, verify a round trip through the [device guide](device.md). Keep old records private for any outstanding reconciliation.
+
+When updating an existing workspace, compare its operating instructions with the current core guide. Carry any private operating choices and explicit grants into its private records before replacing stock guidance. Remove a template-only incident exception. Retain explicit standing grants, their targets, limits and notification terms. Keep the existing priorities and task cards in place. The setup helper refuses an existing workspace.
 
 [Core instructions](core.md) · [Using a phone](dot.md)

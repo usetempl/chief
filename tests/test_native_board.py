@@ -1,6 +1,7 @@
 """Exercise the native tools on private Markdown boards, without an installed service."""
 
 import subprocess
+import os
 import sys
 import tempfile
 import unittest
@@ -70,3 +71,81 @@ class NativeBoard(unittest.TestCase):
         result = self.run_tool("runtime/alfred_report.py", "--root", self.workspace.parent, check=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("tasks directory", result.stderr)
+
+    def test_numbered_open_and_done_items_keep_the_plain_card_reference_across_moves(self):
+        card = self.card("backlog", "proof card", "Report name: A task\nReviewer: Fixture reviewer\nNext: Check it.")
+        self.card("todo", "other", "Report name: Another task")
+        def item(report, filename):
+            return next(line for line in report.splitlines() if line.endswith(" · " + filename))
+        self.assertTrue(item(self.report(), card.name).startswith("1. A task"))
+        self.run_tool("runtime/alfred_board.py", "move", card, "review", "--reason", "Ready for review")
+        self.assertTrue(item(self.report(), card.name).startswith("2. A task"))
+        moved = self.workspace / "tasks" / "review" / card.name
+        self.run_tool("runtime/alfred_board.py", "move", moved, "done", "--reason", "Accepted")
+        self.assertTrue(item(self.report("done"), card.name).startswith("1. A task"))
+
+    def recurring(self, state, due):
+        return self.card(state, "Schedule", "Recurrence: every 7 days\nSchedule driver: chief\n"
+                         f"Authority: Weekly label check\nSchedule owner: chief\nNext run: {due}")
+
+    def test_utc_z_occurrence_and_its_saved_receipt_work_on_system_python(self):
+        due = "2001-05-01T09:00:00Z"
+        card = self.recurring("doing", due)
+        args = ("runtime/alfred_tasks.py", "complete", card, "--expected-run", due, "--outcome", "Verified")
+        self.run_tool(*args)
+        saved = self.workspace / "tasks" / "todo" / card.name
+        before = saved.read_bytes()
+        self.assertIn("Last run: " + due, saved.read_text())
+        self.run_tool(*args)
+        self.assertEqual(saved.read_bytes(), before)
+
+    def test_only_an_explicit_early_occurrence_consumes_its_slot_and_preserves_cadence(self):
+        due = "2099-06-01T12:30:00Z"
+        card = self.recurring("doing", due)
+        args = ("runtime/alfred_tasks.py", "complete", card, "--expected-run", due, "--outcome", "Read label")
+        before = card.read_bytes()
+        denied = self.run_tool(*args, check=False)
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn("--early-authority REQUEST-REF", denied.stderr)
+        self.assertEqual(card.read_bytes(), before)
+        self.run_tool(*args, "--early-authority", "operator-request-2")
+        saved = self.workspace / "tasks" / "todo" / card.name
+        receipt = saved.read_text()
+        self.assertIn("Last run: " + due, receipt)
+        self.assertIn("Next run: 2099-06-08T12:30:00+00:00", receipt)
+        self.assertIn("Recurrence: every 7 days", receipt)
+        self.assertIn("Last completion authority: operator-request-2", receipt)
+        self.run_tool(*args, "--early-authority", "operator-request-2")
+        self.assertEqual(saved.read_text(), receipt)
+
+    def test_due_todo_explains_the_move_without_changing_the_scheduled_occurrence(self):
+        due = "2001-05-01T09:00:00+00:00"
+        card = self.recurring("todo", due)
+        before = card.read_bytes()
+        args = ("--expected-run", due, "--outcome", "Verified")
+        refused = self.run_tool("runtime/alfred_tasks.py", "complete", card, *args, check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(len(refused.stderr.splitlines()), 1)
+        self.assertIn("alfred_board.py move CARD doing", refused.stderr)
+        self.assertEqual(card.read_bytes(), before)
+        self.run_tool("runtime/alfred_board.py", "move", card, "doing", "--reason", "Authorized run started")
+        active = self.workspace / "tasks" / "doing" / card.name
+        self.assertIn("Next run: " + due, active.read_text())
+        self.run_tool("runtime/alfred_tasks.py", "complete", active, *args)
+        self.assertIn("Last run: " + due, card.read_text())
+
+    @unittest.skipUnless(hasattr(os, "getuid"), "POSIX card permissions")
+    def test_shared_writable_card_is_preserved_and_the_owner_gets_an_actionable_hint(self):
+        card = self.card("todo", "shared")
+        card.chmod(0o664)
+        before = card.read_bytes()
+        args = ("runtime/alfred_board.py", "move", card, "doing", "--reason", "Start")
+        refused = self.run_tool(*args, check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(len(refused.stderr.splitlines()), 1)
+        self.assertIn("chmod go-w CARD", refused.stderr)
+        self.assertEqual(card.stat().st_mode & 0o777, 0o664)
+        self.assertEqual(card.read_bytes(), before)
+        card.chmod(0o644)
+        self.run_tool(*args)
+        self.assertTrue((self.workspace / "tasks" / "doing" / card.name).exists())

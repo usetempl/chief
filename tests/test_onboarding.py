@@ -23,7 +23,9 @@ class OnboardingTest(unittest.TestCase):
             result = subprocess.run([sys.executable, str(SCRIPT), "--directory", str(destination), "--no-start"],
                                     input="1\nn\n", text=True, capture_output=True, check=True)
             context = (destination / "COORDINATOR.md").read_text()
-            self.assertIn("declined conversation-history inspection", context)
+            setup = (destination / "SETUP.md").read_text()
+            self.assertIn("Conversation inspection consent: no", setup)
+            self.assertIn("A declined or missing consent limits discovery", context)
             self.assertIn("Codex and Claude Code", context)
             self.assertNotIn(unrelated.read_text(), context)
             self.assertIn("No model launched", result.stdout)
@@ -36,10 +38,44 @@ class OnboardingTest(unittest.TestCase):
             with self.subTest(driver=driver), tempfile.TemporaryDirectory() as temporary:
                 destination = onboard.create_workspace(Path(temporary) / "board", driver, True)
                 context = (destination / "COORDINATOR.md").read_text()
-                self.assertIn("permits inspection", context)
+                self.assertIn("Conversation inspection consent: yes", (destination / "SETUP.md").read_text())
                 self.assertIn("not a platform permission grant", context)
                 self.assertIn("Either driver may coordinate existing Codex and Claude Code", context)
                 self.assertIn("not verified", (destination / "SETUP.md").read_text())
+
+    def test_both_drivers_use_the_manual_guide_and_start_without_an_incident_grant(self):
+        core = (SCRIPT.parent / "docs/core.md").read_bytes()
+        self.assertIn(b"explicit operator grant covering this project, target and action", core)
+        self.assertIn(b"A confirmed incident alone grants no permission", core)
+        for driver in ("codex", "claude"):
+            with self.subTest(driver=driver), tempfile.TemporaryDirectory() as temporary:
+                board = onboard.create_workspace(Path(temporary) / "board", driver, False)
+                self.assertEqual(core, (board / "COORDINATOR.md").read_bytes())
+                self.assertIn("No standing incident grant recorded.", (board / "priorities.md").read_text())
+                for name in ("COORDINATOR.md", "AGENTS.md", "CLAUDE.md", "priorities.md"):
+                    self.assertNotIn("then remediate without waiting", (board / name).read_text())
+
+    def test_opt_in_records_only_the_operator_scope_and_reonboarding_preserves_it(self):
+        grant = "Project: Sample\nTarget: Fixture status page\nActions: Restore its last verified revision.\nLimits: Notify the operator first.\n"
+        for driver in ("codex", "claude"):
+            with self.subTest(driver=driver), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                choice = root / "operator-grant.txt"
+                choice.write_text(grant)
+                board = root / "board"
+                command = [sys.executable, str(SCRIPT), "--directory", str(board), "--driver", driver,
+                           "--history", "no", "--no-start", "--incident-grant-file", str(choice)]
+                subprocess.run(command, check=True, capture_output=True)
+                policy = (board / "priorities.md").read_text()
+                self.assertEqual(policy.partition("## Standing incident authority\n\n")[2], grant)
+                self.assertEqual((board / "COORDINATOR.md").read_bytes(), (SCRIPT.parent / "docs/core.md").read_bytes())
+                choice.write_text("yes\n")
+                self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
+                self.assertEqual((board / "priorities.md").read_text(), policy)
+                with self.assertRaisesRegex(ValueError, "Project"):
+                    onboard.create_workspace(root / "missing-scope", driver, False, incident_grant_file=choice)
+                self.assertFalse((root / "missing-scope").exists())
+        self.assertIn("Retain explicit standing grants", (SCRIPT.parent / "docs/start.md").read_text())
 
     def test_existing_workspace_and_symlink_are_preserved(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -70,17 +106,18 @@ class OnboardingTest(unittest.TestCase):
             self.assertFalse((root / "bad").exists())
             board = onboard.create_workspace(root / "good", "codex", False, "Pilot")
             self.assertIn("# Chief\n", (board / "COORDINATOR.md").read_text())
-            self.assertIn("Both names refer to this one coordinator", (board / "COORDINATOR.md").read_text())
+            self.assertIn("Name: Pilot\nNaming choice: chosen nickname", (board / "SETUP.md").read_text())
+            self.assertIn("Use a chosen nickname for this same Chief", (board / "COORDINATOR.md").read_text())
 
     def test_naming_can_be_skipped_without_granting_history_consent(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination = onboard.create_workspace(Path(temporary) / "board", "codex", False)
             context = (destination / "COORDINATOR.md").read_text()
-            self.assertIn("optional hatch moment", context)
-            self.assertIn("If the user skips naming, keep Chief and continue", context)
-            self.assertIn("declined conversation-history inspection", context)
-            self.assertIn("suggestion based on history needs explicit history consent", context)
-            self.assertIn("Do not start parked work from history", context)
+            self.assertIn("Naming choice: ask", (destination / "SETUP.md").read_text())
+            self.assertIn("Conversation inspection consent: no", (destination / "SETUP.md").read_text())
+            self.assertIn("Keep Chief until the user chooses a name", context)
+            self.assertIn("requested a suggestion and consented to history", context)
+            self.assertIn("Parked work requires a new request", context)
 
     def test_keep_and_suggest_save_distinct_choices_without_inventing_a_name(self):
         for mode in ("keep", "suggest"):
@@ -93,11 +130,10 @@ class OnboardingTest(unittest.TestCase):
                 self.assertIn("History read by this helper: none", setup)
                 context = (destination / "COORDINATOR.md").read_text()
                 if mode == "suggest":
-                    self.assertIn("based only on consented history", context)
-                    self.assertIn("without extra personal-history searches", context)
-                    self.assertIn("keep Chief until they choose it", context)
+                    self.assertIn("Conversation inspection consent: yes", setup)
+                    self.assertIn("same minimal project evidence as discovery", context)
                 else:
-                    self.assertIn("Continue without a naming question", context)
+                    self.assertIn("If the user chose to keep Chief, continue", context)
 
     def test_invalid_naming_choices_fail_before_writing_a_workspace(self):
         cases = [
@@ -133,9 +169,9 @@ class OnboardingTest(unittest.TestCase):
                              {"backlog", "todo", "doing", "blocked", "review", "done"})
             self.assertEqual(list((destination / "tasks").glob("*/*")), [])
             context = (destination / "COORDINATOR.md").read_text()
-            self.assertIn("Review awaits a named human", context)
-            self.assertIn("return the same card to todo with the next run", context)
-            self.assertIn("These files do not schedule execution", context)
+            self.assertIn("awaits a named human", context)
+            self.assertIn("return the same card to `todo` with its next run", context)
+            self.assertIn("These files do not execute schedules", context)
             self.assertIn("Scheduled execution: not configured", (destination / "SETUP.md").read_text())
             self.assertEqual({path.name for path in destination.iterdir()},
                              {"COORDINATOR.md", "AGENTS.md", "CLAUDE.md", "projects.md",

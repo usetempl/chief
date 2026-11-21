@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.1 — 2026-11-21
+
+- Chief can record a project handoff on its task card, recover the original recipient, and match the owner's answer to the accepted assignment. A retry after a confirmed refusal uses a single new attempt.
+- Codex and Claude Code now install the same operating guide. Operators can record exactly which actions Chief may take during a production incident.
+- Numbered reports keep a stable reference to each listed card. The board shows due tasks and accepts UTC deadlines on older Mac Python versions.
+- Finishing a recurring task early now requires an explicit decision from the operator.
+
 ## 0.8.0 — 2026-11-20
 
 - **Breaking change.** Chief now runs directly in the existing Codex or Claude Code conversation. This version removes the Telegram bot, enrollment and delivery service, attachment and voice handling, service installers and relay commands.
